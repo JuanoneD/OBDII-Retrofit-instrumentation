@@ -31,14 +31,14 @@ OBDManager::~OBDManager() {
 }
 
 void OBDManager::scanAndConnect() {
-    if(!callbackInit) {
-        CallbackManager::addFlagWatcher(&sendMessageFlag, OBDManager::update);
+    if (!callbackInit) {
+        BLEDevice::init("");
+        CallbackManager::addTimer(25, OBDManager::update);
         callbackInit = true;
     }
 
     debugPrint("BLE Scan started");
-    
-    BLEDevice::init("");
+
     BLEUUID serviceUUID(OBDII_SERVICE_UUID);
 
     BLEScan* pBLEScan = BLEDevice::getScan();
