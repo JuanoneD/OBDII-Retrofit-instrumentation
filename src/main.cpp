@@ -8,6 +8,7 @@ ECUSTATUS ecustatus = ECUSTATUS::OFFLINE;
 
 void setObdStatustoConnected()
 {
+  if (obdiiStatus == OBDIISTATUS::CONNECTED) return;
   obdiiStatus = OBDIISTATUS::CONNECTED;
   Serial.println("OBDII Connected!");
 }
