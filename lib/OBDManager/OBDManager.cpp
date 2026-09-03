@@ -250,9 +250,15 @@ void OBDManager::update() {
         }
     }
 
-    if(!pClient->isConnected())
+    static bool wasConnected = false;
+    const bool connected = (pClient != nullptr) && pClient->isConnected();
+
+    if (connected) {
+        wasConnected = true;
+    } else if (wasConnected) {
         obdDisconnectedFlag = 1;
-}
+        wasConnected = false;
+    }
 
 void OBDManager::setRawMessageCallback(RawMessageCallback callback) {
     rawMessageCallback = callback;
