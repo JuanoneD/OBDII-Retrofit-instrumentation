@@ -37,11 +37,36 @@ struct FlagWatcherItem {
  * @class CallbackManager
  * @brief Centralized, dynamic, and non-blocking manager for periodic timers
  *        and flag-driven execution (pointer counter monitors).
+ *        All methods are static - no instantiation required.
+ * 
+ * @example
+ * // Example usage (no need to create an instance):
+ * 
+ * void setup() {
+ *     // Add a periodic timer (executes every 1000ms)
+ *     uint32_t timerId = CallbackManager::addTimer(1000, []() {
+ *         Serial.println("Timer fired!");
+ *     });
+ * 
+ *     // Add a flag watcher
+ *     int myFlag = 0;
+ *     CallbackManager::addFlagWatcher(&myFlag, []() {
+ *         Serial.println("Flag triggered!");
+ *     });
+ * }
+ * 
+ * void loop() {
+ *     // Must be called in every loop iteration
+ *     CallbackManager::update();
+ * }
  */
 class CallbackManager {
 public:
-    CallbackManager();
-    ~CallbackManager();
+    // Prevent instantiation
+    CallbackManager() = delete;
+    ~CallbackManager() = delete;
+    CallbackManager(const CallbackManager&) = delete;
+    CallbackManager& operator=(const CallbackManager&) = delete;
 
     // =========================================================================
     // TIMER SUBSYSTEM
@@ -55,35 +80,35 @@ public:
      * @param repeat Whether the timer repeats indefinitely (default: true).
      * @return uint32_t Unique timer ID (0 on failure).
      */
-    uint32_t addTimer(unsigned long intervalMs, CallbackFunction callback, bool enabled = true, bool repeat = true);
+    static uint32_t addTimer(unsigned long intervalMs, CallbackFunction callback, bool enabled = true, bool repeat = true);
 
     /**
      * @brief Pauses a specific timer.
      * @param timerId Timer ID returned by addTimer.
      * @return true if the timer was found and paused.
      */
-    bool pauseTimer(uint32_t timerId);
+    static bool pauseTimer(uint32_t timerId);
 
     /**
      * @brief Resumes a paused timer.
      * @param timerId Timer ID returned by addTimer.
      * @return true if the timer was found and resumed.
      */
-    bool resumeTimer(uint32_t timerId);
+    static bool resumeTimer(uint32_t timerId);
 
     /**
      * @brief Toggles the enabled state of a timer.
      * @param timerId Timer ID.
      * @return true if the timer was found.
      */
-    bool toggleTimer(uint32_t timerId);
+    static bool toggleTimer(uint32_t timerId);
 
     /**
      * @brief Removes and deallocates a timer from the dynamic collection.
      * @param timerId Timer ID to remove.
      * @return true if the timer was found and removed.
      */
-    bool removeTimer(uint32_t timerId);
+    static bool removeTimer(uint32_t timerId);
 
     /**
      * @brief Modifies the interval of an existing timer and resets its base time.
@@ -91,19 +116,19 @@ public:
      * @param newIntervalMs New interval in milliseconds.
      * @return true if the timer was found.
      */
-    bool setTimerInterval(uint32_t timerId, unsigned long newIntervalMs);
+    static bool setTimerInterval(uint32_t timerId, unsigned long newIntervalMs);
 
     /**
      * @brief Resets the time reference of a timer (lastExecution = millis()).
      * @param timerId Timer ID.
      * @return true if the timer was found.
      */
-    bool resetTimer(uint32_t timerId);
+    static bool resetTimer(uint32_t timerId);
 
     /**
      * @brief Removes all registered timers.
      */
-    void clearTimers();
+    static void clearTimers();
 
     // =========================================================================
     // FLAG WATCHER SUBSYSTEM (POINTER COUNTER)
@@ -120,40 +145,40 @@ public:
      * @param enabled Whether the watcher starts enabled (default: true).
      * @return uint32_t Unique flag watcher ID (0 if null pointer).
      */
-    uint32_t addFlagWatcher(int* flagPtr, CallbackFunction callback, bool enabled = true);
+    static uint32_t addFlagWatcher(int* flagPtr, CallbackFunction callback, bool enabled = true);
 
     /**
      * @brief Pauses a specific flag watcher.
      * @param flagId ID returned by addFlagWatcher.
      * @return true if the watcher was found and paused.
      */
-    bool pauseFlagWatcher(uint32_t flagId);
+    static bool pauseFlagWatcher(uint32_t flagId);
 
     /**
      * @brief Resumes a paused flag watcher.
      * @param flagId ID returned by addFlagWatcher.
      * @return true if the watcher was found and resumed.
      */
-    bool resumeFlagWatcher(uint32_t flagId);
+    static bool resumeFlagWatcher(uint32_t flagId);
 
     /**
      * @brief Removes and deallocates a flag watcher from the dynamic collection.
      * @param flagId ID of the watcher to remove.
      * @return true if the watcher was found and removed.
      */
-    bool removeFlagWatcher(uint32_t flagId);
+    static bool removeFlagWatcher(uint32_t flagId);
 
     /**
      * @brief Gets the number of pending cycles for a flag watcher.
      * @param flagId Flag watcher ID.
      * @return int Number of pending cycles (-1 if invalid ID).
      */
-    int getPendingCycles(uint32_t flagId) const;
+    static int getPendingCycles(uint32_t flagId);
 
     /**
      * @brief Removes all registered flag watchers.
      */
-    void clearFlagWatchers();
+    static void clearFlagWatchers();
 
     // =========================================================================
     // CORE PROCESSING ROUTINE (NON-BLOCKING)
@@ -164,20 +189,20 @@ public:
      *        Must be called on every iteration of the ESP32 loop().
      *        Completely non-blocking and single-core friendly.
      */
-    void update();
+    static void update();
 
     // =========================================================================
     // QUERY / DIAGNOSTIC METHODS
     // =========================================================================
-    size_t getTimerCount() const { return m_timers.size(); }
-    size_t getFlagWatcherCount() const { return m_flagWatchers.size(); }
+    static size_t getTimerCount() { return m_timers.size(); }
+    static size_t getFlagWatcherCount() { return m_flagWatchers.size(); }
 
 private:
-    std::vector<TimerItem> m_timers;            ///< Dynamic collection of software timers
-    std::vector<FlagWatcherItem> m_flagWatchers;///< Dynamic collection of flag watchers
-    uint32_t m_nextId;                          ///< Sequential ID generator
+    static std::vector<TimerItem> m_timers;            ///< Dynamic collection of software timers
+    static std::vector<FlagWatcherItem> m_flagWatchers;///< Dynamic collection of flag watchers
+    static uint32_t m_nextId;                          ///< Sequential ID generator
 
-    uint32_t generateId();
+    static uint32_t generateId();
 };
 
 #endif // CALLBACK_MANAGER_H
