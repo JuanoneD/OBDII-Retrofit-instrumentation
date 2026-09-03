@@ -37,7 +37,7 @@ void setup() {
     CallbackManager::addFlagWatcher(&OBDManager::obdDisconnectedFlag,setObdStatustoOffline);
 
     // Timers
-    CallbackManager::addTimer(1000, startOBDIIConnection);
+    CallbackManager::addTimer((OBDII_SCAN_TIME_SEC + 1) * 1000UL, startOBDIIConnection);
 
 }
 
