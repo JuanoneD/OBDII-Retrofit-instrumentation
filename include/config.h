@@ -53,7 +53,11 @@ enum class ECUSTATUS {
 
 #define DEFAULT_TIMEOUT               400
 #define AT_COMMAND_TIMEOUT            1000
-#endif // CONFIG_H
 
-/// Callback type for device found events
+#include <Arduino.h>
+#include <functional>
+
+/// Callback type for raw message events
 using RawMessageCallback = std::function<void(const String& data)>;
+
+#endif // CONFIG_H
