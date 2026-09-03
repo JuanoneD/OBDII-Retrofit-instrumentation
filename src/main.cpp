@@ -1,18 +1,46 @@
 #include <Arduino.h>
+#include "CallbackManager.h"
+#include "OBDManager.h"
+#include "config.h"
 
-// put function declarations here:
-int myFunction(int, int);
+OBDIISTATUS obdiiStatus = OBDIISTATUS::DISCONNECTED;
+ECUSTATUS ecustatus = ECUSTATUS::OFFLINE;
+
+void setObdStatustoConnected()
+{
+  obdiiStatus = OBDIISTATUS::CONNECTED;
+  Serial.println("OBDII Connected!");
+}
+
+void setObdStatustoOffline()
+{
+  obdiiStatus = OBDIISTATUS::DISCONNECTED;
+  Serial.println("OBDII Disconnected!");
+}
+
+void startOBDIIConnection()
+{
+  if(obdiiStatus == OBDIISTATUS::DISCONNECTED)
+    OBDManager::scanAndConnect();
+}
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+    // put your setup code here, to run once:
+    Serial.begin(115200);
+    Serial.println("Hello, world!");
+
+    OBDManager::setDebugSerial(&Serial);
+
+    // Signals
+    CallbackManager::addFlagWatcher(&OBDManager::obdConnectedFlag,setObdStatustoConnected);
+    CallbackManager::addFlagWatcher(&OBDManager::obdDisconnectedFlag,setObdStatustoOffline);
+
+    // Timers
+    CallbackManager::addTimer(1000, startOBDIIConnection);
+
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-}
-
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+  CallbackManager::update();
 }
