@@ -22,6 +22,7 @@ int OBDManager::sendMessageFlag = 0;
 bool OBDManager::callbackInit = false;
 int OBDManager::obdConnectedFlag = 0;
 int OBDManager::obdDisconnectedFlag = 0;
+int OBDManager::obdConnectionAttemptFlag = 0;
 RawMessageCallback OBDManager::rawMessageCallback = nullptr;
 
 OBDManager::OBDManager() {
@@ -38,6 +39,7 @@ void OBDManager::scanAndConnect() {
     }
 
     debugPrint("BLE Scan started");
+    obdConnectionAttemptFlag = 1;
 
     BLEUUID serviceUUID(OBDII_SERVICE_UUID);
 
@@ -64,6 +66,7 @@ void OBDManager::scanAndConnect() {
 
     pBLEScan->clearResults();
     debugPrint("No OBD-II adapter found.");
+    obdDisconnectedFlag = 0;
     return;
 }
 
@@ -83,6 +86,7 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
 
     if (!pClient->connect(targetAddress)) {
         debugPrint("ERROR: Failed to connect via BLEAdvertisedDevice");
+        obdDisconnectedFlag = 1;
         return;
     }
 
@@ -92,6 +96,7 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
     if (pRemoteService == nullptr) {
         debugPrint("ERROR: Service not found");
         pClient->disconnect();
+        obdDisconnectedFlag = 1;
         return;
     }
 
@@ -101,6 +106,7 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
     if (pCharTX == nullptr || pCharRX == nullptr) {
         debugPrint("ERROR: Characteristics not found");
         pClient->disconnect();
+        obdDisconnectedFlag = 1;
         return;
     }
 
@@ -259,6 +265,7 @@ void OBDManager::update() {
         obdDisconnectedFlag = 1;
         wasConnected = false;
     }
+}
 
 void OBDManager::setRawMessageCallback(RawMessageCallback callback) {
     rawMessageCallback = callback;

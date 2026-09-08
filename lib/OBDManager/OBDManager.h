@@ -27,6 +27,7 @@ public:
     
     static int obdConnectedFlag;
     static int obdDisconnectedFlag;
+    static int obdConnectionAttemptFlag;
     
 private:
     static BLEClient* pClient;

@@ -5,18 +5,30 @@
 
 OBDIISTATUS obdiiStatus = OBDIISTATUS::DISCONNECTED;
 ECUSTATUS ecustatus = ECUSTATUS::OFFLINE;
+uint32_t startOBDIIConnectionID = 0;
 
 void setObdStatustoConnected()
 {
   if (obdiiStatus == OBDIISTATUS::CONNECTED) return;
+
+  CallbackManager::pauseTimer(startOBDIIConnectionID);
   obdiiStatus = OBDIISTATUS::CONNECTED;
   Serial.println("OBDII Connected!");
 }
 
 void setObdStatustoOffline()
 {
+  if (obdiiStatus == OBDIISTATUS::DISCONNECTED) return;
+
   obdiiStatus = OBDIISTATUS::DISCONNECTED;
+  CallbackManager::resumeTimer(startOBDIIConnectionID);
   Serial.println("OBDII Disconnected!");
+}
+
+void setObdStatustoTryingToConnect()
+{
+  obdiiStatus = OBDIISTATUS::TRYING_TO_CONNECT;
+  Serial.println("OBDII Trying to Connect...");
 }
 
 void startOBDIIConnection()
@@ -35,9 +47,10 @@ void setup() {
     // Signals
     CallbackManager::addFlagWatcher(&OBDManager::obdConnectedFlag,setObdStatustoConnected);
     CallbackManager::addFlagWatcher(&OBDManager::obdDisconnectedFlag,setObdStatustoOffline);
+    CallbackManager::addFlagWatcher(&OBDManager::obdConnectionAttemptFlag,setObdStatustoTryingToConnect);
 
     // Timers
-    CallbackManager::addTimer((OBDII_SCAN_TIME_SEC + 1) * 1000UL, startOBDIIConnection);
+    startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
 
 }
 

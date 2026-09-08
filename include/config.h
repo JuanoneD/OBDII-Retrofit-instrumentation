@@ -29,6 +29,7 @@
 
 enum class OBDIISTATUS {
     DISCONNECTED,
+    TRYING_TO_CONNECT,
     CONNECTED
 };
 
