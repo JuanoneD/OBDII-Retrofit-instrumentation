@@ -9,6 +9,7 @@
 #include <queue>
 #include "config.h"
 #include "CallbackManager.h"
+#include "DebugSerial.h"
 
 /**
  * @class OBDManager
@@ -22,7 +23,8 @@ public:
     static void scanAndConnect();
     static void clearCommandQueue();
     static void addCommandToQueue(const String& command);
-    static void setDebugSerial(Stream* serial);   
+    [[deprecated("Use DebugSerial directly")]]
+    static void setDebugSerial(Stream* serial = nullptr) { (void)serial; }
     static void setRawMessageCallback(RawMessageCallback callback);
     
     static int obdConnectedFlag;
@@ -59,9 +61,6 @@ private:
     
     static void sendCommand(String command);
     static std::queue<String> commandQueue;
-
-    static Stream* debugSerial;
-    static void debugPrint(const String& message);
 };
 
 #endif // OBD_MANAGER_H

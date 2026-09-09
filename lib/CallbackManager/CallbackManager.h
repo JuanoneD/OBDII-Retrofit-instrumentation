@@ -45,13 +45,13 @@ struct FlagWatcherItem {
  * void setup() {
  *     // Add a periodic timer (executes every 1000ms)
  *     uint32_t timerId = CallbackManager::addTimer(1000, []() {
- *         Serial.println("Timer fired!");
+ *         DebugSerial::println("Timer fired!");
  *     });
  * 
  *     // Add a flag watcher
  *     int myFlag = 0;
  *     CallbackManager::addFlagWatcher(&myFlag, []() {
- *         Serial.println("Flag triggered!");
+ *         DebugSerial::println("Flag triggered!");
  *     });
  * }
  * 
