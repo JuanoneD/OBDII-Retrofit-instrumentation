@@ -1,14 +1,10 @@
 #include "CallbackManager.h"
 #include <algorithm>
 
-CallbackManager::CallbackManager()
-    : m_nextId(1) {
-}
-
-CallbackManager::~CallbackManager() {
-    clearTimers();
-    clearFlagWatchers();
-}
+// Initialize static members
+std::vector<TimerItem> CallbackManager::m_timers;
+std::vector<FlagWatcherItem> CallbackManager::m_flagWatchers;
+uint32_t CallbackManager::m_nextId = 1;
 
 uint32_t CallbackManager::generateId() {
     uint32_t id = m_nextId++;
@@ -158,7 +154,7 @@ bool CallbackManager::removeFlagWatcher(uint32_t flagId) {
     return false;
 }
 
-int CallbackManager::getPendingCycles(uint32_t flagId) const {
+int CallbackManager::getPendingCycles(uint32_t flagId) {
     for (const auto& watcher : m_flagWatchers) {
         if (watcher.id == flagId) {
             return watcher.pendingCycles;
