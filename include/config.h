@@ -53,8 +53,46 @@ enum class ECUSTATUS {
 
 #define OBDII_SCAN_TIME_SEC          3
 
-#define DEFAULT_TIMEOUT               400
-#define AT_COMMAND_TIMEOUT            1000
+#define DEFAULT_TIMEOUT               2000
+#define AT_COMMAND_TIMEOUT            4000
+
+// -----------------------------------------------------------------------------
+// OBD-II Standard PIDs (Mode 01)
+// -----------------------------------------------------------------------------
+#define PID_ENGINE_LOAD                 0x04
+#define PID_COOLANT_TEMP                0x05
+#define PID_LONG_TERM_FUEL_TRIM         0x07
+#define PID_MAP                         0x0B
+#define PID_ENGINE_RPM                  0x0C
+#define PID_VEHICLE_SPEED               0x0D
+#define PID_TIMING_ADVANCE              0x0E
+#define PID_THROTTLE_POSITION           0x11
+#define PID_CONTROL_MODULE_VOLTAGE      0x42
+
+// Command strings for querying Mode 01 PIDs
+#define PID_ENGINE_LOAD_STR             "0104"
+#define PID_COOLANT_TEMP_STR            "0105"
+#define PID_LONG_TERM_FUEL_TRIM_STR     "0107"
+#define PID_MAP_STR                     "010B"
+#define PID_ENGINE_RPM_STR              "010C"
+#define PID_VEHICLE_SPEED_STR           "010D"
+#define PID_TIMING_ADVANCE_STR          "010E"
+#define PID_CONTROL_MODULE_VOLTAGE_STR  "0142"
+#define PID_THROTTLE_POSITION_STR       "0111"
+
+// -----------------------------------------------------------------------------
+// OBD-II Mathematical Constants for Formulas
+// -----------------------------------------------------------------------------
+#define OBD_RPM_DIVISOR                 4.0f
+#define OBD_COOLANT_TEMP_OFFSET         40.0f
+#define OBD_ENGINE_LOAD_FACTOR          100.0f
+#define OBD_ENGINE_LOAD_DIVISOR         255.0f
+#define OBD_TIMING_ADVANCE_DIVISOR      2.0f
+#define OBD_TIMING_ADVANCE_OFFSET       64.0f
+#define OBD_VOLTAGE_DIVISOR             1000.0f
+#define OBD_FUEL_TRIM_FACTOR            100.0f
+#define OBD_FUEL_TRIM_DIVISOR           128.0f
+#define OBD_FUEL_TRIM_OFFSET            100.0f
 
 #include <Arduino.h>
 #include <functional>
