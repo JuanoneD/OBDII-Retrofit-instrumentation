@@ -87,6 +87,7 @@ void setObdStatustoOffline()
   CallbackManager::resumeTimer(startOBDIIConnectionID);
   CallbackManager::pauseTimer(ecuMessagesSenderID);
 
+  setEcuStatustoOffline();
   OBDManager::clearCommandQueue();
 }
 

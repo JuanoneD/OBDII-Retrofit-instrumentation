@@ -20,6 +20,7 @@ void OBDDecoder::decode(const String& rawResponse) {
     int idx = clean.indexOf("41");
     if (idx == -1 || clean.length() < (unsigned int)(idx + 4)) {
         DebugSerial::println("Offline response: " + rawResponse);
+        ecu_offline_flag = 1;
         return;
     }
 
