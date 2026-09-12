@@ -127,7 +127,7 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
     addCommandToQueue("ATZ");
     addCommandToQueue("ATE0");
     addCommandToQueue("ATH0");
-    addCommandToQueue("ATSP1");
+    addCommandToQueue("ATSP0");
     addCommandToQueue("ATAT1");
     addCommandToQueue("ATL0");
     sendMessageFlag = 1;
