@@ -4,9 +4,7 @@
 #include "config.h"
 #include "DebugSerial.h"
 #include "OBDDecoder.h"
-
-OBDIISTATUS obdiiStatus = OBDIISTATUS::DISCONNECTED;
-ECUSTATUS ecustatus = ECUSTATUS::OFFLINE;
+#include "VehicleData.h"
 
 uint32_t startOBDIIConnectionID = 0;
 uint32_t ecuMessagesSenderID = 0;
@@ -15,7 +13,7 @@ int messageIndex = 0;
 
 void messageSendingCallback()
 {
-  if (obdiiStatus != OBDIISTATUS::CONNECTED) return;
+  if (VehicleData::getInstance().getObdiiStatus() != OBDIISTATUS::CONNECTED) return;
 
   switch (messageIndex)
   {
@@ -52,36 +50,36 @@ void messageSendingCallback()
 
 void setObdStatustoConnected()
 {
-  if (obdiiStatus == OBDIISTATUS::CONNECTED) return;
+  if (VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::CONNECTED) return;
 
   CallbackManager::pauseTimer(startOBDIIConnectionID);
-  obdiiStatus = OBDIISTATUS::CONNECTED;
+  VehicleData::getInstance().setObdiiStatus(OBDIISTATUS::CONNECTED);
   DebugSerial::println("OBDII Connected!");
   CallbackManager::resumeTimer(ecuMessagesSenderID);
 }
 
 void setEcuStatustoOnline()
 {
-  if (ecustatus == ECUSTATUS::ONLINE) return;
+  if (VehicleData::getInstance().getEcuStatus() == ECUSTATUS::ONLINE) return;
 
-  ecustatus = ECUSTATUS::ONLINE;
+  VehicleData::getInstance().setEcuStatus(ECUSTATUS::ONLINE);
   DebugSerial::println("ECU Online!");
 }
 
 void setEcuStatustoOffline()
 {
-  if (ecustatus == ECUSTATUS::OFFLINE) return;
+  if (VehicleData::getInstance().getEcuStatus() == ECUSTATUS::OFFLINE) return;
 
-  ecustatus = ECUSTATUS::OFFLINE;
+  VehicleData::getInstance().setEcuStatus(ECUSTATUS::OFFLINE);
   DebugSerial::println("ECU Offline!");
 }
 
 
 void setObdStatustoOffline()
 {
-  if (obdiiStatus == OBDIISTATUS::DISCONNECTED) return;
+  if (VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::DISCONNECTED) return;
 
-  obdiiStatus = OBDIISTATUS::DISCONNECTED;
+  VehicleData::getInstance().setObdiiStatus(OBDIISTATUS::DISCONNECTED);
   DebugSerial::println("OBDII Disconnected!");
 
   CallbackManager::resumeTimer(startOBDIIConnectionID);
@@ -93,20 +91,23 @@ void setObdStatustoOffline()
 
 void setObdStatustoTryingToConnect()
 {
-  if(obdiiStatus == OBDIISTATUS::CONNECTED) return;
+  if(VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::CONNECTED) return;
 
-  obdiiStatus = OBDIISTATUS::TRYING_TO_CONNECT;
+  VehicleData::getInstance().setObdiiStatus(OBDIISTATUS::TRYING_TO_CONNECT);
   DebugSerial::println("OBDII Trying to Connect...");
 }
 
 void startOBDIIConnection()
 {
-  if(obdiiStatus == OBDIISTATUS::DISCONNECTED)
+  if(VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::DISCONNECTED)
     OBDManager::scanAndConnect();
 }
 
 void setup() {
     DebugSerial::begin();
+
+    // Initialize persistent data
+    VehicleData::getInstance().loadPersistentData();
 
     // Class initialization
     OBDManager::setRawMessageCallback(OBDDecoder::decode);

@@ -68,7 +68,8 @@ void OBDDecoder::decodeRPM(const String& data) {
     if (data.length() < 4) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
     uint8_t b = (uint8_t)strtoul(data.substring(2, 4).c_str(), nullptr, 16);
-    float rpm = ((a * 256.0f) + b) / 4.0f;
+    int rpm = (int)(((a * 256) + b) / 4);
+    VehicleData::getInstance().setEngineRPM(rpm);
     DebugSerial::println("RPM: " + String(rpm) + " RPM");
 }
 
@@ -76,7 +77,8 @@ void OBDDecoder::decodeRPM(const String& data) {
 void OBDDecoder::decodeVehicleSpeed(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
-    float speed = a;
+    int speed = a;
+    VehicleData::getInstance().setVehicleSpeed(speed);
     DebugSerial::println("Speed: " + String(speed) + " km/h");
 }
 
@@ -84,7 +86,8 @@ void OBDDecoder::decodeVehicleSpeed(const String& data) {
 void OBDDecoder::decodeCoolantTemp(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
-    float temp = a - 40.0f;
+    int temp = (int)a - 40;
+    VehicleData::getInstance().setCoolantTemp(temp);
     DebugSerial::println("Coolant Temp: " + String(temp) + " C");
 }
 
@@ -93,6 +96,7 @@ void OBDDecoder::decodeEngineLoad(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
     float load = (a * 100.0f) / 255.0f;
+    VehicleData::getInstance().setEngineLoad(load);
     DebugSerial::println("Engine Load: " + String(load) + " %");
 }
 
@@ -101,6 +105,7 @@ void OBDDecoder::decodeTimingAdvance(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
     float advance = (a / 2.0f) - 64.0f;
+    VehicleData::getInstance().setTimingAdvance(advance);
     DebugSerial::println("Timing Advance: " + String(advance) + " deg");
 }
 
@@ -118,6 +123,7 @@ void OBDDecoder::decodeControlModuleVoltage(const String& data) {
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
     uint8_t b = (uint8_t)strtoul(data.substring(2, 4).c_str(), nullptr, 16);
     float voltage = ((a * 256.0f) + b) / 1000.0f;
+    VehicleData::getInstance().setModuleVoltage(voltage);
     DebugSerial::println("Control Module Voltage: " + String(voltage) + " V");
 }
 
@@ -126,6 +132,7 @@ void OBDDecoder::decodeLongTermFuelTrim(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
     float trim = (a * 100.0f / 128.0f) - 100.0f;
+    VehicleData::getInstance().setLongTermFuelTrim(trim);
     DebugSerial::println("Long Term Fuel Trim: " + String(trim) + " %");
 }
 
@@ -133,6 +140,7 @@ void OBDDecoder::decodeLongTermFuelTrim(const String& data) {
 void OBDDecoder::decodeMAP(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
-    float map = a;
+    float map = (float)a;
+    VehicleData::getInstance().setMapPressure(map);
     DebugSerial::println("MAP: " + String(map) + " kPa");
 }
