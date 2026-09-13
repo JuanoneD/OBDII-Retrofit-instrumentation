@@ -175,7 +175,6 @@ void CallbackManager::update() {
     const unsigned long now = millis();
 
     // 1. Process Timers
-    // Use index iteration to remain safe if collection is modified inside callbacks
     for (size_t i = 0; i < m_timers.size(); ++i) {
         if (!m_timers[i].enabled) {
             continue;
@@ -185,15 +184,27 @@ void CallbackManager::update() {
         if (static_cast<unsigned long>(now - m_timers[i].lastExecution) >= m_timers[i].intervalMs) {
             m_timers[i].lastExecution = now;
 
+            // Snapshot timer properties before callback to handle collection mutations safely
+            uint32_t timerId = m_timers[i].id;
+            bool repeat = m_timers[i].repeat;
+            CallbackFunction cb = m_timers[i].callback;
+
             // Execute associated callback
-            if (m_timers[i].callback) {
-                m_timers[i].callback();
+            if (cb) {
+                cb();
             }
 
-            // Handle one-shot timers
-            if (!m_timers[i].repeat) {
-                m_timers.erase(m_timers.begin() + i);
-                --i; // Adjust loop index after removal
+            // Handle one-shot timers: locate original entry by ID before erasing
+            if (!repeat) {
+                for (size_t j = 0; j < m_timers.size(); ++j) {
+                    if (m_timers[j].id == timerId) {
+                        m_timers.erase(m_timers.begin() + j);
+                        if (j <= i) {
+                            --i; // Adjust loop index if erased element was before or at current index
+                        }
+                        break;
+                    }
+                }
             }
         }
     }
@@ -215,8 +226,9 @@ void CallbackManager::update() {
         if (m_flagWatchers[i].pendingCycles > 0) {
             m_flagWatchers[i].pendingCycles--;
 
-            if (m_flagWatchers[i].callback) {
-                m_flagWatchers[i].callback();
+            CallbackFunction cb = m_flagWatchers[i].callback;
+            if (cb) {
+                cb();
             }
         }
     }

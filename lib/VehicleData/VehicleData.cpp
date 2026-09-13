@@ -14,6 +14,7 @@ VehicleData::VehicleData()
       coolantTemp(0),
       engineLoad(0.0f),
       timingAdvance(0.0f),
+      throttlePosition(0.0f),
       moduleVoltage(0.0f),
       longTermFuelTrim(0.0f),
       mapPressure(0.0f),
@@ -126,6 +127,14 @@ float VehicleData::getTimingAdvance() const {
 
 void VehicleData::setTimingAdvance(float advance) {
     timingAdvance = advance;
+}
+
+float VehicleData::getThrottlePosition() const {
+    return throttlePosition;
+}
+
+void VehicleData::setThrottlePosition(float throttle) {
+    throttlePosition = throttle;
 }
 
 float VehicleData::getModuleVoltage() const {

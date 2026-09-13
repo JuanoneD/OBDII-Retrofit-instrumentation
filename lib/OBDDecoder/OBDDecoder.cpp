@@ -114,6 +114,7 @@ void OBDDecoder::decodeThrottlePosition(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
     float throttle = (a * 100.0f) / 255.0f;
+    VehicleData::getInstance().setThrottlePosition(throttle);
     DebugSerial::println("Throttle Position: " + String(throttle) + " %");
 }
 

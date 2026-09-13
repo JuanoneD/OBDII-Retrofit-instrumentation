@@ -36,6 +36,9 @@ public:
     float getTimingAdvance() const;
     void setTimingAdvance(float advance);
 
+    float getThrottlePosition() const;
+    void setThrottlePosition(float throttle);
+
     float getModuleVoltage() const;
     void setModuleVoltage(float voltage);
 
@@ -81,6 +84,7 @@ private:
     int coolantTemp;
     float engineLoad;
     float timingAdvance;
+    float throttlePosition;
     float moduleVoltage;
     float longTermFuelTrim;
     float mapPressure;

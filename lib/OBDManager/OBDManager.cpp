@@ -2,6 +2,8 @@
 #include "config.h"
 #include "CallbackManager.h"
 
+bool OBDManager::isScanning = false;
+BLEAdvertisedDevice* OBDManager::foundTargetDevice = nullptr;
 BLEClient* OBDManager::pClient = nullptr;
 BLERemoteCharacteristic* OBDManager::pCharTX = nullptr;
 BLERemoteCharacteristic* OBDManager::pCharRX = nullptr;
@@ -30,6 +32,40 @@ OBDManager::OBDManager() {
 OBDManager::~OBDManager() {
 }
 
+void OBDManager::onScanCompleted(BLEScanResults scanResults) {
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    BLEUUID targetUUID(OBDII_SERVICE_UUID);
+
+    bool adapterFound = false;
+    for (int i = 0; i < scanResults.getCount(); i++) {
+        BLEAdvertisedDevice device = scanResults.getDevice(i);
+
+        bool nameMatch = device.getName().find(OBDII_NAME_PREFIX) != std::string::npos
+                       || device.getName().find(OBDII_NAME_PREFIX_2) != std::string::npos
+                       || device.getName().find(OBDII_NAME_PREFIX_3) != std::string::npos;
+
+        bool serviceMatch = device.haveServiceUUID() && device.isAdvertisingService(targetUUID);
+
+        if (nameMatch || serviceMatch) {
+            DebugSerial::println("Found adapter: " + String(device.getAddress().toString().c_str()));
+            if (foundTargetDevice != nullptr) {
+                delete foundTargetDevice;
+            }
+            foundTargetDevice = new BLEAdvertisedDevice(device);
+            adapterFound = true;
+            break;
+        }
+    }
+
+    pBLEScan->clearResults();
+    isScanning = false;
+
+    if (!adapterFound) {
+        DebugSerial::println("No OBD-II adapter found.");
+        obdDisconnectedFlag = 0;
+    }
+}
+
 void OBDManager::scanAndConnect() {
     if (!callbackInit) {
         BLEDevice::init("");
@@ -37,36 +73,21 @@ void OBDManager::scanAndConnect() {
         callbackInit = true;
     }
 
-    DebugSerial::println("BLE Scan started");
-    obdConnectionAttemptFlag = 1;
+    if (isScanning) {
+        return;
+    }
 
-    BLEUUID serviceUUID(OBDII_SERVICE_UUID);
+    if (pClient != nullptr && pClient->isConnected()) {
+        return;
+    }
+
+    DebugSerial::println("BLE Scan started (asynchronous)");
+    obdConnectionAttemptFlag = 1;
 
     BLEScan* pBLEScan = BLEDevice::getScan();
     pBLEScan->setActiveScan(true);
-    BLEScanResults foundDevices = pBLEScan->start(OBDII_SCAN_TIME_SEC, false);
-
-    for (int i = 0; i < foundDevices.getCount(); i++) {
-        BLEAdvertisedDevice device = foundDevices.getDevice(i);
-
-        bool nameMatch = device.getName().find(OBDII_NAME_PREFIX) != std::string::npos
-                       || device.getName().find(OBDII_NAME_PREFIX_2) != std::string::npos
-                       || device.getName().find(OBDII_NAME_PREFIX_3) != std::string::npos;
-
-        bool serviceMatch = device.haveServiceUUID() && device.isAdvertisingService(serviceUUID);
-
-        if (nameMatch || serviceMatch) {
-            DebugSerial::println("Found adapter: " + String(device.getAddress().toString().c_str()));
-            pBLEScan->clearResults();
-            connectToDevice(device);
-            return;
-        }
-    }
-
-    pBLEScan->clearResults();
-    DebugSerial::println("No OBD-II adapter found.");
-    obdDisconnectedFlag = 0;
-    return;
+    isScanning = true;
+    pBLEScan->start(OBDII_SCAN_TIME_SEC, onScanCompleted, false);
 }
 
 void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
@@ -229,6 +250,15 @@ void OBDManager::addCommandToQueue(const String& command) {
 }
 
 void OBDManager::update() {
+    // If an adapter was detected by the async scan, connect to it now in the main loop thread
+    if (foundTargetDevice != nullptr) {
+        BLEAdvertisedDevice target = *foundTargetDevice;
+        delete foundTargetDevice;
+        foundTargetDevice = nullptr;
+        connectToDevice(target);
+        return;
+    }
+
     // Process pending send from command queue
     if (messageReceived && !commandQueue.empty()) {
         sendCommand(commandQueue.front());

@@ -32,6 +32,9 @@ public:
     static int obdConnectionAttemptFlag;
     
 private:
+    static bool isScanning;
+    static BLEAdvertisedDevice* foundTargetDevice;
+    static void onScanCompleted(BLEScanResults scanResults);
     static BLEClient* pClient;
     static RawMessageCallback rawMessageCallback;
     static void connectToDevice(BLEAdvertisedDevice& device);
