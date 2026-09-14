@@ -5,9 +5,11 @@
 #include "DebugSerial.h"
 #include "OBDDecoder.h"
 #include "VehicleData.h"
+#include "FuelCalculator.h"
 
 uint32_t startOBDIIConnectionID = 0;
 uint32_t ecuMessagesSenderID = 0;
+uint32_t fuelCalculatorID = 0;
 
 int messageIndex = 0;
 
@@ -24,10 +26,10 @@ void messageSendingCallback()
     OBDManager::addCommandToQueue(PID_VEHICLE_SPEED_STR); // Vehicle Speed
     break;
   case 2:
-    //OBDManager::addCommandToQueue(PID_COOLANT_TEMP_STR); // Coolant Temp
+    OBDManager::addCommandToQueue(PID_COOLANT_TEMP_STR); // Coolant Temp
     break;
   case 3:
-    //OBDManager::addCommandToQueue(PID_ENGINE_LOAD_STR); // Engine Load
+    OBDManager::addCommandToQueue(PID_ENGINE_LOAD_STR); // Engine Load
     break;
   case 4:
     //OBDManager::addCommandToQueue(PID_TIMING_ADVANCE_STR); // Timing Advance
@@ -39,7 +41,7 @@ void messageSendingCallback()
     //OBDManager::addCommandToQueue(PID_CONTROL_MODULE_VOLTAGE_STR); // Control Module Voltage
     break;
   case 7:
-    //OBDManager::addCommandToQueue(PID_LONG_TERM_FUEL_TRIM_STR); // Long Term Fuel Trim
+    OBDManager::addCommandToQueue(PID_LONG_TERM_FUEL_TRIM_STR); // Long Term Fuel Trim
     break;
   default:
     messageIndex = -1; // Reset index to -1 so that it becomes 0 on the next increment
@@ -109,6 +111,9 @@ void setup() {
     // Initialize persistent data
     VehicleData::getInstance().loadPersistentData();
 
+    // Initialize fuel consumption calculator (loads K from NVS)
+    FuelCalculator::getInstance().begin();
+
     // Class initialization
     OBDManager::setRawMessageCallback(OBDDecoder::decode);
 
@@ -122,6 +127,7 @@ void setup() {
     // Timers
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
     ecuMessagesSenderID = CallbackManager::addTimer(400, messageSendingCallback);
+    fuelCalculatorID = CallbackManager::addTimer(500, []() { FuelCalculator::getInstance().update(); });
 
     // Timers control
     CallbackManager::pauseTimer(ecuMessagesSenderID);
