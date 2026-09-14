@@ -175,33 +175,56 @@ void CallbackManager::update() {
     const unsigned long now = millis();
 
     // 1. Process Timers
-    for (size_t i = 0; i < m_timers.size(); ++i) {
-        if (!m_timers[i].enabled) {
+    //
+    // Snapshot the set of timer IDs present at the start of this update cycle.
+    // Iterating over this snapshot (and re-locating each timer by ID on every
+    // iteration) makes the loop robust against arbitrary mutations performed
+    // inside callbacks: a callback may remove earlier/later timers, remove
+    // itself, or add new ones without causing us to skip or double-process
+    // any timer. Timers added during this update() call are intentionally
+    // deferred to the next cycle.
+    std::vector<uint32_t> timerIdSnapshot;
+    timerIdSnapshot.reserve(m_timers.size());
+    for (const auto& t : m_timers) {
+        timerIdSnapshot.push_back(t.id);
+    }
+
+    for (uint32_t timerId : timerIdSnapshot) {
+        // Re-locate the timer by ID; it may have been removed by a prior callback.
+        size_t idx = m_timers.size();
+        for (size_t k = 0; k < m_timers.size(); ++k) {
+            if (m_timers[k].id == timerId) {
+                idx = k;
+                break;
+            }
+        }
+        if (idx == m_timers.size()) {
+            continue; // Timer no longer exists
+        }
+
+        if (!m_timers[idx].enabled) {
             continue;
         }
 
         // Safe overflow check for millis()
-        if (static_cast<unsigned long>(now - m_timers[i].lastExecution) >= m_timers[i].intervalMs) {
-            m_timers[i].lastExecution = now;
+        if (static_cast<unsigned long>(now - m_timers[idx].lastExecution) >= m_timers[idx].intervalMs) {
+            m_timers[idx].lastExecution = now;
 
-            // Snapshot timer properties before callback to handle collection mutations safely
-            uint32_t timerId = m_timers[i].id;
-            bool repeat = m_timers[i].repeat;
-            CallbackFunction cb = m_timers[i].callback;
+            // Snapshot properties before callback to handle collection mutations safely
+            bool repeat = m_timers[idx].repeat;
+            CallbackFunction cb = m_timers[idx].callback;
 
             // Execute associated callback
             if (cb) {
                 cb();
             }
 
-            // Handle one-shot timers: locate original entry by ID before erasing
+            // Handle one-shot timers: locate original entry by ID before erasing.
+            // The callback may have shifted or removed the entry entirely.
             if (!repeat) {
                 for (size_t j = 0; j < m_timers.size(); ++j) {
                     if (m_timers[j].id == timerId) {
                         m_timers.erase(m_timers.begin() + j);
-                        if (j <= i) {
-                            --i; // Adjust loop index if erased element was before or at current index
-                        }
                         break;
                     }
                 }
