@@ -41,7 +41,7 @@ void FuelCalculator::update() {
     float load      = vd.getEngineLoad();          // %
     float ltft      = vd.getLongTermFuelTrim();    // %
 
-    if (rpm <= 0.0f) return; // Engine off -> no consumption
+    if (vd.getObdiiStatus() != OBDIISTATUS::CONNECTED || vd.getEcuStatus() != ECUSTATUS::ONLINE || rpm <= 0.0f) return;
 
     // 3. Apply formula: Consumption = (RPM * EngineLoad * K * LTFT) * dt
     float consumption = (rpm * load * k * ltft) * dt;
