@@ -2,6 +2,10 @@
 #include "config.h"
 #include "CallbackManager.h"
 
+namespace {
+portMUX_TYPE foundTargetDeviceMux = portMUX_INITIALIZER_UNLOCKED;
+}
+
 bool OBDManager::isScanning = false;
 BLEAdvertisedDevice* OBDManager::foundTargetDevice = nullptr;
 BLEClient* OBDManager::pClient = nullptr;
@@ -48,10 +52,17 @@ void OBDManager::onScanCompleted(BLEScanResults scanResults) {
 
         if (nameMatch || serviceMatch) {
             DebugSerial::println("Found adapter: " + String(device.getAddress().toString().c_str()));
-            if (foundTargetDevice != nullptr) {
-                delete foundTargetDevice;
+            BLEAdvertisedDevice* newTargetDevice = new BLEAdvertisedDevice(device);
+            BLEAdvertisedDevice* previousTargetDevice = nullptr;
+
+            portENTER_CRITICAL(&foundTargetDeviceMux);
+            previousTargetDevice = foundTargetDevice;
+            foundTargetDevice = newTargetDevice;
+            portEXIT_CRITICAL(&foundTargetDeviceMux);
+
+            if (previousTargetDevice != nullptr) {
+                delete previousTargetDevice;
             }
-            foundTargetDevice = new BLEAdvertisedDevice(device);
             adapterFound = true;
             break;
         }
@@ -251,10 +262,15 @@ void OBDManager::addCommandToQueue(const String& command) {
 
 void OBDManager::update() {
     // If an adapter was detected by the async scan, connect to it now in the main loop thread
-    if (foundTargetDevice != nullptr) {
-        BLEAdvertisedDevice target = *foundTargetDevice;
-        delete foundTargetDevice;
-        foundTargetDevice = nullptr;
+    BLEAdvertisedDevice* targetDevice = nullptr;
+    portENTER_CRITICAL(&foundTargetDeviceMux);
+    targetDevice = foundTargetDevice;
+    foundTargetDevice = nullptr;
+    portEXIT_CRITICAL(&foundTargetDeviceMux);
+
+    if (targetDevice != nullptr) {
+        BLEAdvertisedDevice target = *targetDevice;
+        delete targetDevice;
         connectToDevice(target);
         return;
     }
