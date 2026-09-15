@@ -83,7 +83,6 @@ enum class ECUSTATUS {
 // -----------------------------------------------------------------------------
 // OBD-II Mathematical Constants for Formulas
 // -----------------------------------------------------------------------------
-#define OBD_RPM_DIVISOR                 4.0f
 #define OBD_COOLANT_TEMP_OFFSET         40.0f
 #define OBD_ENGINE_LOAD_FACTOR          100.0f
 #define OBD_ENGINE_LOAD_DIVISOR         255.0f

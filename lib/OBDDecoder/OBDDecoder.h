@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include "DebugSerial.h"
+#include "VehicleData.h"
 
 class OBDDecoder {
 public:
