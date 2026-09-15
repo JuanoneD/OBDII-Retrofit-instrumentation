@@ -6,10 +6,14 @@
 #include "OBDDecoder.h"
 #include "VehicleData.h"
 #include "FuelCalculator.h"
+#include "DisplayManager.h"
+
+DisplayManager display;
 
 uint32_t startOBDIIConnectionID = 0;
 uint32_t ecuMessagesSenderID = 0;
 uint32_t fuelCalculatorID = 0;
+uint32_t displayUpdateID = 0;
 
 int messageIndex = 0;
 
@@ -114,6 +118,9 @@ void setup() {
     // Initialize fuel consumption calculator (loads K from NVS)
     FuelCalculator::getInstance().begin();
 
+    // Initialize LCD (renders "Connecting OBDII..." until status changes).
+    display.begin(0x27, 20, 4);
+
     // Class initialization
     OBDManager::setRawMessageCallback(OBDDecoder::decode);
 
@@ -128,6 +135,7 @@ void setup() {
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
     ecuMessagesSenderID = CallbackManager::addTimer(400, messageSendingCallback);
     fuelCalculatorID = CallbackManager::addTimer(500, []() { FuelCalculator::getInstance().update(); });
+    displayUpdateID  = CallbackManager::addTimer(500, []() { display.updateAll(); });
 
     // Timers control
     CallbackManager::pauseTimer(ecuMessagesSenderID);
