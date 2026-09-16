@@ -2,6 +2,7 @@
 #define DISPLAY_MANAGER_H
 
 #include <Arduino.h>
+#include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
 /**
@@ -48,51 +49,43 @@ enum class DisplayMode : uint8_t {
 
 class DisplayManager {
 public:
-    // Upper bound of the RPM bar (RPM value that fills all 20 blocks).
-    // Tune empirically for the target engine.
     static constexpr int RPM_BAR_MAX = 7000;
 
     DisplayManager();
 
-    // Initializes the I2C LCD. This is the ONLY place lcd.clear() runs.
-    void begin(uint8_t lcd_addr = 0x27, uint8_t cols = 20, uint8_t rows = 4);
+    // Initializes I2C (with the given SDA/SCL pins) and the LCD.
+    // This is the ONLY place lcd.clear() runs.
+    // Returns false if the LCD did not ACK at lcd_addr (I2C wiring/address problem).
+    bool begin(uint8_t lcd_addr = 0x27, uint8_t cols = 20, uint8_t rows = 4,
+               int8_t sda = 21, int8_t scl = 22);
 
-    // Main entry point: inspects VehicleData status and renders the
-    // appropriate screen (status message or dashboard). Cache-aware:
-    // fields whose formatted value did not change are skipped.
     void updateAll();
-
-    // Update a single dashboard field on demand (only meaningful while
-    // in DASHBOARD mode; no-op otherwise).
     void updateField(DisplayField field);
-
-    // Forces the next render to redraw everything regardless of cache.
     void invalidateCache();
 
 private:
     LiquidCrystal_I2C m_lcd;
     uint8_t m_cols;
     uint8_t m_rows;
+    uint8_t m_addr;
     bool m_initialized;
     DisplayMode m_currentMode;
 
-    // Dashboard field cache (empty string => never written / dirty).
     String m_cacheRpm;
     String m_cacheGas;
     String m_cacheSpeed;
     String m_cacheTemp;
     String m_cacheLoad;
     String m_cacheLtft;
-    int    m_cacheRpmBarBlocks; // -1 => dirty
+    int    m_cacheRpmBarBlocks;
 
-    // Renderers per mode.
+    bool probeI2C(uint8_t addr);
+
     void renderStatusConnecting();
     void renderStatusWaitEcu();
     void renderDashboard();
     void renderRpmBar(int rpm);
 
-    // Formatting helpers – fixed-width strings so overwrites always
-    // cover the previous content without needing clear().
     static String formatRpm(int rpm);
     static String formatGas(float liters);
     static String formatSpeed(int kmh);
@@ -100,15 +93,9 @@ private:
     static String formatLoad(float loadPct);
     static String formatLtft(float trimPct);
 
-    // Cache-aware writer.
     void writeIfChanged(uint8_t col, uint8_t row,
                         const String& value, String& cache);
-
-    // Draws a centered fixed-width message on the given row.
     void writeCenteredRow(uint8_t row, const String& text);
-
-    // Switches to a new mode, wiping the screen (without clear()) and
-    // invalidating caches so the next writes redraw everything.
     void enterMode(DisplayMode mode);
 };
 

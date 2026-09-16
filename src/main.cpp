@@ -119,7 +119,10 @@ void setup() {
     FuelCalculator::getInstance().begin();
 
     // Initialize LCD (renders "Connecting OBDII..." until status changes).
-    display.begin(0x27, 20, 4);
+
+    if (!display.begin(0x27, 20, 4, 21, 22)) {
+        Serial.println("LCD Fail");
+    }
 
     // Class initialization
     OBDManager::setRawMessageCallback(OBDDecoder::decode);

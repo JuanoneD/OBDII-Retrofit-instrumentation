@@ -17,12 +17,32 @@ DisplayManager::DisplayManager()
       m_currentMode(DisplayMode::NONE),
       m_cacheRpmBarBlocks(-1) {}
 
-void DisplayManager::begin(uint8_t lcd_addr, uint8_t cols, uint8_t rows) {
-    // Re-instantiate the underlying driver with the requested address/geometry.
-    m_lcd = LiquidCrystal_I2C(lcd_addr, cols, rows);
+bool DisplayManager::probeI2C(uint8_t addr) {
+    Wire.beginTransmission(addr);
+    uint8_t err = Wire.endTransmission();
+    return (err == 0); // 0 = ACK receive
+}
+
+bool DisplayManager::begin(uint8_t lcd_addr, uint8_t cols, uint8_t rows,
+                            int8_t sda, int8_t scl) {
+    m_addr = lcd_addr;
     m_cols = cols;
     m_rows = rows;
 
+    if (sda >= 0 && scl >= 0) {
+        Wire.begin(sda, scl);
+    } else {
+        Wire.begin();
+    }
+    delay(200);
+
+    if (!probeI2C(lcd_addr)) {
+        DebugSerial::println("DisplayManager: no LCD answer");
+        m_initialized = false;
+        return false; // endereco errado ou fiacao/solda com problema
+    }
+
+    m_lcd = LiquidCrystal_I2C(lcd_addr, cols, rows);
     m_lcd.init();
     m_lcd.backlight();
     m_lcd.clear(); // ONLY allowed clear() in the entire lifecycle.
@@ -33,8 +53,8 @@ void DisplayManager::begin(uint8_t lcd_addr, uint8_t cols, uint8_t rows) {
 
     DebugSerial::println("DisplayManager initialized (20x4 I2C).");
 
-    // Render the appropriate screen for the current state.
     updateAll();
+    return true;
 }
 
 void DisplayManager::invalidateCache() {
