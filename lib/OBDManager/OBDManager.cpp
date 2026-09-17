@@ -4,6 +4,19 @@
 
 namespace {
 portMUX_TYPE foundTargetDeviceMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Protects OBD communication state (lastResponse, lastCommandSent,
+// messageReceived, lastCommandSentTime, currentTimeout, echoDisabled),
+// since these are written both by notifyCallback() (runs on the Bluedroid
+// BLE task) and by sendCommand()/update() (run in loop() context).
+portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Holds a completed response until update() (loop-context) picks it up,
+// so decode() and its String parsing / Serial prints never run on the
+// BLE task itself.
+volatile bool responsePending = false;
+String pendingResponseText;
+bool pendingEchoJustDisabled = false;
 }
 
 bool OBDManager::isScanning = false;
@@ -30,11 +43,8 @@ int OBDManager::obdDisconnectedFlag = 0;
 int OBDManager::obdConnectionAttemptFlag = 0;
 RawMessageCallback OBDManager::rawMessageCallback = nullptr;
 
-OBDManager::OBDManager() {
-}
-
-OBDManager::~OBDManager() {
-}
+OBDManager::OBDManager() {}
+OBDManager::~OBDManager() {}
 
 void OBDManager::onScanCompleted(BLEScanResults scanResults) {
     BLEScan* pBLEScan = BLEDevice::getScan();
@@ -60,9 +70,7 @@ void OBDManager::onScanCompleted(BLEScanResults scanResults) {
             foundTargetDevice = newTargetDevice;
             portEXIT_CRITICAL(&foundTargetDeviceMux);
 
-            if (previousTargetDevice != nullptr) {
-                delete previousTargetDevice;
-            }
+            if (previousTargetDevice != nullptr) delete previousTargetDevice;
             adapterFound = true;
             break;
         }
@@ -84,13 +92,8 @@ void OBDManager::scanAndConnect() {
         callbackInit = true;
     }
 
-    if (isScanning) {
-        return;
-    }
-
-    if (pClient != nullptr && pClient->isConnected()) {
-        return;
-    }
+    if (isScanning) return;
+    if (pClient != nullptr && pClient->isConnected()) return;
 
     DebugSerial::println("BLE Scan started (asynchronous)");
     obdConnectionAttemptFlag = 1;
@@ -141,6 +144,9 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
         return;
     }
 
+    DebugSerial::println(String("pCharTX canWrite: ") + (pCharTX->canWrite() ? "yes" : "no") +
+                      " canWriteNoResponse: " + (pCharTX->canWriteNoResponse() ? "yes" : "no"));
+
     if (pCharRX->canNotify()) {
         pCharRX->registerForNotify([](BLERemoteCharacteristic* c, uint8_t* pData, size_t length, bool isNotify) {
             OBDManager::notifyCallback(c, pData, length, isNotify);
@@ -149,12 +155,15 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
 
     DebugSerial::println("Characteristics ready, queuing configuration commands...");
 
-    // Reset all state for a new connection, including echo
-    // (the ATZ resets the adapter, so echo returns to being enabled by default)
-    clearCommandQueue();
+    portENTER_CRITICAL(&stateMux);
     messageReceived = true;
     echoDisabled = false;
     lastCommandSent = "";
+    lastResponse = "";
+    responsePending = false;
+    portEXIT_CRITICAL(&stateMux);
+
+    clearCommandQueue();
 
     addCommandToQueue("ATZ");
     addCommandToQueue("ATE0");
@@ -167,56 +176,78 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
     obdConnectedFlag = 1;
 }
 
+// Only ever called from loop()-context.
+// Only ever called from loop()-context.
 void OBDManager::sendCommand(String command) {
     if (pClient == nullptr || !pClient->isConnected() || pCharTX == nullptr) {
         DebugSerial::println("Cannot send command, BLE not ready: " + command);
         return;
     }
 
-    // Trim and validate command
     String trimmedCommand = command;
     trimmedCommand.trim();
-    
-    // Don't send empty commands
+
     if (trimmedCommand.length() == 0) {
         DebugSerial::println("WARNING: Empty command sending");
-        messageReceived = true;  // Reset state
+        portENTER_CRITICAL(&stateMux);
+        messageReceived = true;
+        portEXIT_CRITICAL(&stateMux);
         return;
     }
-    
-    lastCommandSent = trimmedCommand;
 
     if (!command.endsWith("\r")) command += "\r";
-    DebugSerial::println("Sending: " + trimmedCommand);
 
+    unsigned long timeoutToUse = trimmedCommand.startsWith("AT") ? AT_COMMAND_TIMEOUT : DEFAULT_TIMEOUT;
+
+    portENTER_CRITICAL(&stateMux);
+    lastCommandSent = trimmedCommand;
     lastResponse = "";
     messageReceived = false;
     lastCommandSentTime = millis();
-    currentTimeout = trimmedCommand.startsWith("AT") ? AT_COMMAND_TIMEOUT : DEFAULT_TIMEOUT;
+    currentTimeout = timeoutToUse;
+    portEXIT_CRITICAL(&stateMux);
 
-    pCharTX->writeValue((uint8_t*)command.c_str(), command.length(), false);
+    unsigned long writeStart = millis();
+    
+    // Executa a escrita sem capturar o retorno diretamente na variável booleana
+    pCharTX->writeValue((uint8_t*)command.c_str(), command.length(), true);
+    bool ok = true; // Como o writeValue moderno não retorna bool na sua versão atual, assumimos sucesso no envio ATT ou tratamos pelo fluxo de resposta/timeout.
+    
+    unsigned long writeDuration = millis() - writeStart;
+
+    DebugSerial::println("Sending: " + trimmedCommand +
+                          " | write-with-response ok=1" +
+                          " tomou " + String(writeDuration) + "ms");
+                          
+    if (!ok) {
+        // Write falhou no nível ATT — trata como se tivesse dado timeout
+        // pra não travar a máquina de estados esperando resposta que não virá.
+        portENTER_CRITICAL(&stateMux);
+        messageReceived = true;
+        portEXIT_CRITICAL(&stateMux);
+    }
 }
 
+// Runs on the Bluedroid BLE task, NOT on loop(). Keep this fast: only
+// append bytes and, once a full response is detected, stash it for
+// update() to process. No String parsing beyond echo/terminator
+// detection, no calls to rawMessageCallback, no prints here.
 void OBDManager::notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-    if (messageReceived == true) {
-        DebugSerial::println("Warning: Unexpected notification while idle, discarding");
+    portENTER_CRITICAL(&stateMux);
+
+    if (messageReceived) {
+        portEXIT_CRITICAL(&stateMux);
         return;
     }
 
-    for (int i = 0; i < length; i++) {
+    for (size_t i = 0; i < length; i++) {
         lastResponse += (char)pData[i];
     }
 
-    // While the echo hasn't been confirmed as disabled, the adapter sends
-    // the command itself back before (or together with) the real response.
-    // Remove that part of the buffer so it isn't mistaken for ECU data.
     if (!echoDisabled && lastCommandSent.length() > 0) {
         int echoIndex = lastResponse.indexOf(lastCommandSent);
         if (echoIndex != -1) {
-            DebugSerial::println("Echo detected, removing: \"" + lastCommandSent + "\"");
             lastResponse.remove(echoIndex, lastCommandSent.length());
-
-            // clear leftover CR/LF that remain right after the echo
             while (lastResponse.length() > 0 && (lastResponse[0] == '\r' || lastResponse[0] == '\n')) {
                 lastResponse.remove(0, 1);
             }
@@ -224,36 +255,35 @@ void OBDManager::notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristi
     }
 
     if (lastResponse.indexOf('>') != -1) {
-        String cleanResponse = lastResponse;
-        cleanResponse.trim();
+        pendingResponseText = lastResponse;
+        pendingResponseText.trim();
 
-        if (cleanResponse.length() > 0) {
-            DebugSerial::println("Message Received: " + cleanResponse);
-        }
-
-        if (!echoDisabled && lastCommandSent == "ATE0" && cleanResponse.indexOf("OK") != -1) {
+        pendingEchoJustDisabled = false;
+        if (!echoDisabled && lastCommandSent == "ATE0" && pendingResponseText.indexOf("OK") != -1) {
             echoDisabled = true;
-            DebugSerial::println("Echo successfully disabled (ATE0 confirmed)");
+            pendingEchoJustDisabled = true;
         }
 
         messageReceived = true;
         lastResponse = "";
-
-        sendMessageFlag = 1; // wake up update() on the next loop() cycle
-        if (rawMessageCallback) {
-            rawMessageCallback(cleanResponse);
-        }
+        responsePending = true;
+        sendMessageFlag = 1;
     }
+
+    portEXIT_CRITICAL(&stateMux);
 }
 
 void OBDManager::clearCommandQueue() {
-    while (!commandQueue.empty()) {
-        commandQueue.pop();
-    }
+    while (!commandQueue.empty()) commandQueue.pop();
 }
 
 void OBDManager::addCommandToQueue(const String& command) {
-    if (commandQueue.empty() && messageReceived) {
+    bool canSendNow;
+    portENTER_CRITICAL(&stateMux);
+    canSendNow = commandQueue.empty() && messageReceived;
+    portEXIT_CRITICAL(&stateMux);
+
+    if (canSendNow) {
         sendCommand(command);
         return;
     }
@@ -261,7 +291,6 @@ void OBDManager::addCommandToQueue(const String& command) {
 }
 
 void OBDManager::update() {
-    // If an adapter was detected by the async scan, connect to it now in the main loop thread
     BLEAdvertisedDevice* targetDevice = nullptr;
     portENTER_CRITICAL(&foundTargetDeviceMux);
     targetDevice = foundTargetDevice;
@@ -275,20 +304,59 @@ void OBDManager::update() {
         return;
     }
 
-    // Process pending send from command queue
-    if (messageReceived && !commandQueue.empty()) {
-        sendCommand(commandQueue.front());
-        commandQueue.pop();
+    // Process any response the BLE task stashed for us. decode() and its
+    // Serial prints happen here, safely off the BLE task.
+    bool hasResponse = false;
+    String responseToProcess;
+    bool echoJustDisabled = false;
+    portENTER_CRITICAL(&stateMux);
+    if (responsePending) {
+        hasResponse = true;
+        responseToProcess = pendingResponseText;
+        echoJustDisabled = pendingEchoJustDisabled;
+        responsePending = false;
+    }
+    portEXIT_CRITICAL(&stateMux);
+
+    if (hasResponse) {
+        if (responseToProcess.length() > 0) {
+            DebugSerial::println("Message Received: " + responseToProcess);
+        }
+        if (echoJustDisabled) {
+            DebugSerial::println("Echo successfully disabled (ATE0 confirmed)");
+        }
+        if (rawMessageCallback) {
+            rawMessageCallback(responseToProcess);
+        }
     }
 
-    // Check for timeout
+    bool canSendNext;
+    portENTER_CRITICAL(&stateMux);
+    canSendNext = messageReceived;
+    portEXIT_CRITICAL(&stateMux);
+
+    if (canSendNext && !commandQueue.empty()) {
+        String next = commandQueue.front();
+        commandQueue.pop();
+        sendCommand(next);
+    }
+
+    bool timedOut = false;
+    String timedOutCommand;
+    portENTER_CRITICAL(&stateMux);
     if (!messageReceived && lastCommandSentTime > 0) {
         unsigned long elapsed = millis() - lastCommandSentTime;
         if (elapsed >= currentTimeout) {
-            DebugSerial::println("ERROR: Timeout waiting for response to: " + lastCommandSent);
-            messageReceived = true;  // Reset state to allow next command
+            timedOut = true;
+            timedOutCommand = lastCommandSent;
+            messageReceived = true;
             lastResponse = "";
         }
+    }
+    portEXIT_CRITICAL(&stateMux);
+
+    if (timedOut) {
+        DebugSerial::println("ERROR: Timeout waiting for response to: " + timedOutCommand);
     }
 
     static bool wasConnected = false;

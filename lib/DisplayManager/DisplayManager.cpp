@@ -39,7 +39,7 @@ bool DisplayManager::begin(uint8_t lcd_addr, uint8_t cols, uint8_t rows,
     if (!probeI2C(lcd_addr)) {
         DebugSerial::println("DisplayManager: no LCD answer");
         m_initialized = false;
-        return false; // endereco errado ou fiacao/solda com problema
+        return false;
     }
 
     m_lcd = LiquidCrystal_I2C(lcd_addr, cols, rows);
@@ -102,14 +102,15 @@ String DisplayManager::formatRpm(int rpm) {
     return String(buf);
 }
 
-String DisplayManager::formatGas(float liters) {
-    if (liters < 0.0f)   liters = 0.0f;
-    if (liters > 99.9f)  liters = 99.9f;
+String DisplayManager::formatGas(float gasPct) {
+    if (gasPct < 0.0f)   gasPct = 0.0f;
+    if (gasPct > 100.0f) gasPct = 100.0f;
     char buf[8];
-    snprintf(buf, sizeof(buf), "%4.1f", liters);
+    snprintf(buf, sizeof(buf), "%3d", (int)(gasPct + 0.5f));
     return String(buf);
 }
 
+// Format speed to always occupy 3 positions (e.g. "  5", " 45", "120") to prevent residual digits
 String DisplayManager::formatSpeed(int kmh) {
     if (kmh < 0)   kmh = 0;
     if (kmh > 999) kmh = 999;
@@ -122,7 +123,7 @@ String DisplayManager::formatTemp(int celsius) {
     if (celsius < -9) celsius = -9;
     if (celsius > 199) celsius = 199;
     char buf[8];
-    snprintf(buf, sizeof(buf), "%2d", celsius);
+    snprintf(buf, sizeof(buf), "%3d", celsius);
     return String(buf);
 }
 
@@ -135,10 +136,15 @@ String DisplayManager::formatLoad(float loadPct) {
 }
 
 String DisplayManager::formatLtft(float trimPct) {
-    if (trimPct < -99.9f) trimPct = -99.9f;
-    if (trimPct > 99.9f)  trimPct = 99.9f;
+    if (trimPct < -99.0f) trimPct = -99.0f;
+    if (trimPct > 99.0f)  trimPct = 99.0f;
+    
+    // Arredonda corretamente o float para inteiro (ex: 3.2 -> 3, -1.2 -> -1)
+    int val = (int)(trimPct + (trimPct >= 0 ? 0.5f : -0.5f));
+    
     char buf[8];
-    snprintf(buf, sizeof(buf), "%4.1f", trimPct); // width 4 (e.g. "-2.3", " 3.1")
+    // Formata explicitamente com o sinal (+ ou -) seguido do número e do '%'
+    snprintf(buf, sizeof(buf), "%+d%% ", val);
     return String(buf);
 }
 
@@ -170,7 +176,6 @@ void DisplayManager::enterMode(DisplayMode mode) {
     m_currentMode = mode;
     invalidateCache();
 
-    // Wipe screen without clear(): overwrite every row with spaces.
     String blank = padRight("", m_cols);
     for (uint8_t r = 0; r < m_rows; ++r) {
         m_lcd.setCursor(0, r);
@@ -209,49 +214,40 @@ void DisplayManager::renderStatusWaitEcu() {
 void DisplayManager::renderDashboard() {
     VehicleData& v = VehicleData::getInstance();
 
-    // Row 0: "RPM:####  GAS:##.#L " (20 cols)
-    //         0123456789012345678901
+    // Row 0: "RPM: 0000        99%" (20 cols total)
+    // RPM starts at col 5 (4 chars width). Gas percentage right-aligned at col 16 (3 chars width) + "%" at col 19.
     if (m_cacheRpm.length() == 0) {
         m_lcd.setCursor(0, 0);
-        m_lcd.print("RPM:");
-        m_lcd.setCursor(10, 0);
-        m_lcd.print("GAS:");
+        m_lcd.print("RPM:     "); // fixed static labels
         m_lcd.setCursor(19, 0);
-        m_lcd.print("L");
+        m_lcd.print("%");
     }
-    writeIfChanged(4,  0, formatRpm(v.getEngineRPM()),     m_cacheRpm);
-    writeIfChanged(14, 0, formatGas(v.getGasolineLevel()), m_cacheGas);
+    writeIfChanged(5,  0, formatRpm(v.getEngineRPM()),     m_cacheRpm);
+    writeIfChanged(16, 0, formatGas(v.getGasolineLevel()), m_cacheGas);
 
-    // Row 1: "VEL:### km/h TEMP:##C"  -> that's 21 chars, trim to 20 by
-    // dropping the space between km/h and TEMP:
-    // "VEL:### km/hTEMP:##C" -> 20 chars.
+    // Row 1: "00 km/h            00 Cº" (20 cols total)
+    // Speed right-aligned to finish cleanly at km/h, Temp right-aligned at the end with degree symbol.
     if (m_cacheSpeed.length() == 0) {
         m_lcd.setCursor(0, 1);
-        m_lcd.print("VEL:");
-        m_lcd.setCursor(7, 1);
-        m_lcd.print(" km/h");
-        m_lcd.setCursor(12, 1);
-        m_lcd.print("TEMP:");
-        m_lcd.setCursor(19, 1);
-        m_lcd.print("C");
+        m_lcd.print("    km/h");
+        m_lcd.setCursor(14, 1);
+        m_lcd.print("  "); // spacing
+        m_lcd.setCursor(18, 1);
+        m_lcd.print("C\xDF"); // \xDF prints degree symbol '°' on HD44780 ROM
     }
-    writeIfChanged(4,  1, formatSpeed(v.getVehicleSpeed()), m_cacheSpeed);
-    writeIfChanged(17, 1, formatTemp(v.getCoolantTemp()),   m_cacheTemp);
+    // Speed uses 3 chars width (cols 0, 1, 2) ensuring single digits like '9' are cleanly padded with spaces ("  9")
+    writeIfChanged(0,  1, formatSpeed(v.getVehicleSpeed()), m_cacheSpeed);
+    writeIfChanged(15, 1, formatTemp(v.getCoolantTemp()),   m_cacheTemp);
 
-    // Row 2: "LOAD:###%  LTFT:##.#%" -> 21 chars; drop trailing '%'
-    // Final: "LOAD:###%  LTFT:##.#" (20 chars).
+    // Row 2: "LOAD: 99%    LTFT: +0%" (20 cols total)
     if (m_cacheLoad.length() == 0) {
         m_lcd.setCursor(0, 2);
-        m_lcd.print("LOAD:");
-        m_lcd.setCursor(8, 2);
-        m_lcd.print("%");
-        m_lcd.setCursor(11, 2);
-        m_lcd.print("LTFT:");
+        m_lcd.print("LOAD:   % LTFT: ");
     }
     writeIfChanged(5,  2, formatLoad(v.getEngineLoad()),        m_cacheLoad);
     writeIfChanged(16, 2, formatLtft(v.getLongTermFuelTrim()),  m_cacheLtft);
 
-    // Row 3: RPM bar
+    // Row 3: RPM bar (intocada)
     renderRpmBar(v.getEngineRPM());
 }
 
@@ -259,12 +255,11 @@ void DisplayManager::renderRpmBar(int rpm) {
     if (rpm < 0) rpm = 0;
     if (rpm > RPM_BAR_MAX) rpm = RPM_BAR_MAX;
 
-    // Linear scale RPM -> number of filled blocks (0..m_cols).
     int blocks = (int)(((long)rpm * m_cols + RPM_BAR_MAX / 2) / RPM_BAR_MAX);
     if (blocks < 0) blocks = 0;
     if (blocks > (int)m_cols) blocks = m_cols;
 
-    if (blocks == m_cacheRpmBarBlocks) return; // cache hit, no I2C traffic.
+    if (blocks == m_cacheRpmBarBlocks) return;
 
     m_lcd.setCursor(0, 3);
     for (int i = 0; i < blocks; ++i) {
@@ -287,7 +282,6 @@ void DisplayManager::updateAll() {
     OBDIISTATUS obd = v.getObdiiStatus();
     ECUSTATUS   ecu = v.getEcuStatus();
 
-    // Pick the correct mode for the current state.
     DisplayMode target;
     if (obd != OBDIISTATUS::CONNECTED) {
         target = DisplayMode::STATUS_CONNECTING;
@@ -325,19 +319,19 @@ void DisplayManager::updateField(DisplayField field) {
 
     switch (field) {
         case DisplayField::RPM:
-            writeIfChanged(4, 0, formatRpm(v.getEngineRPM()), m_cacheRpm);
+            writeIfChanged(5, 0, formatRpm(v.getEngineRPM()), m_cacheRpm);
             break;
         case DisplayField::GAS:
-            writeIfChanged(14, 0, formatGas(v.getGasolineLevel()), m_cacheGas);
+            writeIfChanged(16, 0, formatGas(v.getGasolineLevel()), m_cacheGas);
             break;
         case DisplayField::SPEED:
-            writeIfChanged(4, 1, formatSpeed(v.getVehicleSpeed()), m_cacheSpeed);
+            writeIfChanged(0, 1, formatSpeed(v.getVehicleSpeed()), m_cacheSpeed);
             break;
         case DisplayField::TEMP:
-            writeIfChanged(17, 1, formatTemp(v.getCoolantTemp()), m_cacheTemp);
+            writeIfChanged(15, 1, formatTemp(v.getCoolantTemp()), m_cacheTemp);
             break;
         case DisplayField::LOAD:
-            writeIfChanged(5, 2, formatLoad(v.getEngineLoad()), m_cacheLoad);
+            writeIfChanged(6, 2, formatLoad(v.getEngineLoad()), m_cacheLoad);
             break;
         case DisplayField::LTFT:
             writeIfChanged(16, 2, formatLtft(v.getLongTermFuelTrim()), m_cacheLtft);

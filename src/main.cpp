@@ -28,15 +28,20 @@ void messageSendingCallback()
     break;
   case 1:
     OBDManager::addCommandToQueue(PID_VEHICLE_SPEED_STR); // Vehicle Speed
+    OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
     break;
   case 2:
     OBDManager::addCommandToQueue(PID_COOLANT_TEMP_STR); // Coolant Temp
+    OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
     break;
   case 3:
     OBDManager::addCommandToQueue(PID_ENGINE_LOAD_STR); // Engine Load
+    OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
     break;
   case 4:
-    //OBDManager::addCommandToQueue(PID_TIMING_ADVANCE_STR); // Timing Advance
+    OBDManager::addCommandToQueue(PID_LONG_TERM_FUEL_TRIM_STR); // Long Term Fuel Trim
+    OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
+    messageIndex = -1; // Reset index to -1 so that it becomes 0 on the next increment
     break;
   case 5:
     //OBDManager::addCommandToQueue(PID_THROTTLE_POSITION_STR); // Throttle Position
@@ -45,7 +50,7 @@ void messageSendingCallback()
     //OBDManager::addCommandToQueue(PID_CONTROL_MODULE_VOLTAGE_STR); // Control Module Voltage
     break;
   case 7:
-    OBDManager::addCommandToQueue(PID_LONG_TERM_FUEL_TRIM_STR); // Long Term Fuel Trim
+    //OBDManager::addCommandToQueue(PID_TIMING_ADVANCE_STR); // Timing Advance
     break;
   default:
     messageIndex = -1; // Reset index to -1 so that it becomes 0 on the next increment
@@ -62,6 +67,7 @@ void setObdStatustoConnected()
   VehicleData::getInstance().setObdiiStatus(OBDIISTATUS::CONNECTED);
   DebugSerial::println("OBDII Connected!");
   CallbackManager::resumeTimer(ecuMessagesSenderID);
+  CallbackManager::resumeTimer(fuelCalculatorID);
 }
 
 void setEcuStatustoOnline()
@@ -90,6 +96,7 @@ void setObdStatustoOffline()
 
   CallbackManager::resumeTimer(startOBDIIConnectionID);
   CallbackManager::pauseTimer(ecuMessagesSenderID);
+  CallbackManager::pauseTimer(fuelCalculatorID);
 
   setEcuStatustoOffline();
   OBDManager::clearCommandQueue();
@@ -142,6 +149,7 @@ void setup() {
 
     // Timers control
     CallbackManager::pauseTimer(ecuMessagesSenderID);
+    CallbackManager::pauseTimer(fuelCalculatorID);
   }
 
 void loop() {

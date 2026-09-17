@@ -30,31 +30,31 @@ VehicleData::~VehicleData() {
 }
 
 void VehicleData::loadPersistentData() {
-    preferences.begin("vehicledata", false);
+    preferences.begin("OBD2_READER", true);
 
-    tankCapacity = preferences.getFloat("tankCap", DEFAULT_TANK_CAPACITY);
-    if (!preferences.isKey("tankCap")) {
-        preferences.putFloat("tankCap", DEFAULT_TANK_CAPACITY);
+    tankCapacity = preferences.getFloat("capacity", DEFAULT_TANK_CAPACITY);
+    if (!preferences.isKey("capacity")) {
+        preferences.putFloat("capacity", DEFAULT_TANK_CAPACITY);
     }
 
-    gasolineLevel = preferences.getFloat("gasLevel", DEFAULT_GASOLINE_LEVEL);
-    if (!preferences.isKey("gasLevel")) {
-        preferences.putFloat("gasLevel", DEFAULT_GASOLINE_LEVEL);
+    gasolineLevel = preferences.getFloat("fuel", DEFAULT_GASOLINE_LEVEL);
+    if (!preferences.isKey("fuel")) {
+        preferences.putFloat("fuel", DEFAULT_GASOLINE_LEVEL);
     }
 
-    fuelConsumptionFactor = preferences.getFloat("fuelFactor", DEFAULT_FUEL_CONSUMPTION_FACTOR);
-    if (!preferences.isKey("fuelFactor")) {
-        preferences.putFloat("fuelFactor", DEFAULT_FUEL_CONSUMPTION_FACTOR);
+    fuelConsumptionFactor = preferences.getFloat("factor", DEFAULT_FUEL_CONSUMPTION_FACTOR);
+    if (!preferences.isKey("factor")) {
+        preferences.putFloat("factor", DEFAULT_FUEL_CONSUMPTION_FACTOR);
     }
 
-    totalDistance = preferences.getFloat("totDist", DEFAULT_TOTAL_DISTANCE);
-    if (!preferences.isKey("totDist")) {
-        preferences.putFloat("totDist", DEFAULT_TOTAL_DISTANCE);
+    totalDistance = preferences.getFloat("distance", DEFAULT_TOTAL_DISTANCE);
+    if (!preferences.isKey("distance")) {
+        preferences.putFloat("distance", DEFAULT_TOTAL_DISTANCE);
     }
 
-    tripConsumption = preferences.getFloat("tripCons", DEFAULT_TRIP_CONSUMPTION);
-    if (!preferences.isKey("tripCons")) {
-        preferences.putFloat("tripCons", DEFAULT_TRIP_CONSUMPTION);
+    tripConsumption = preferences.getFloat("tripFuel", DEFAULT_TRIP_CONSUMPTION);
+    if (!preferences.isKey("tripFuel")) {
+        preferences.putFloat("tripFuel", DEFAULT_TRIP_CONSUMPTION);
     }
 
     DebugSerial::println("[VehicleData] Loaded persistent data from NVS:");
