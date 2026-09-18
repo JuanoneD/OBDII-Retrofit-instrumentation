@@ -39,16 +39,24 @@ void FuelCalculator::update() {
     // 2. Read volatile parameters from the ECU (via VehicleData)
     float rpm       = static_cast<float>(vd.getEngineRPM());
     float load      = vd.getEngineLoad();          // %
-    float ltft      = vd.getLongTermFuelTrim();    // %
+    float rawLtft   = vd.getLongTermFuelTrim();    // % (ex: -10.0, 5.0, etc.)
 
     if (vd.getObdiiStatus() != OBDIISTATUS::CONNECTED || vd.getEcuStatus() != ECUSTATUS::ONLINE || rpm <= 0.0f) return;
 
-    // 3. Apply formula: Consumption = (RPM * EngineLoad * K * LTFT) * dt
-    float consumption = (rpm * load * k * ltft) * dt;
+    // 3. Convert LTFT percentage to a multiplicative correction factor (e.g., -10% -> 0.90, +5% -> 1.05)
+    float ltftMultiplier = 1.0f + (rawLtft / 100.0f);
+    
+    // Safety guard to prevent negative or zero multipliers in case of extreme sensor errors
+    if (ltftMultiplier < 0.1f) {
+        ltftMultiplier = 0.1f;
+    }
+
+    // 4. Apply formula: Consumption = (RPM * EngineLoad * K * LtftMultiplier) * dt
+    float consumption = (rpm * load * k * ltftMultiplier) * dt;
 
     if (consumption <= 0.0f) return;
 
-    // 4. Subtract from persistent gasoline level and persist via setter (NVS)
+    // 5. Subtract from persistent gasoline level and persist via setter (NVS)
     float currentLevel = vd.getGasolineLevel();
     float newLevel = currentLevel - consumption;
     if (newLevel < 0.0f) newLevel = 0.0f;
