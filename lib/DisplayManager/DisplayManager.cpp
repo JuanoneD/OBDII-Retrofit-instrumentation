@@ -222,8 +222,10 @@ void DisplayManager::renderDashboard() {
         m_lcd.setCursor(19, 0);
         m_lcd.print("%");
     }
-    writeIfChanged(5,  0, formatRpm(v.getEngineRPM()),     m_cacheRpm);
-    writeIfChanged(16, 0, formatGas(v.getGasolineLevel()), m_cacheGas);
+    float cap = v.getTankCapacity();
+    float gasPct = (cap > 0.0f) ? (v.getGasolineLevel() / cap * 100.0f) : 0.0f;
+    writeIfChanged(5,  0, formatRpm(v.getEngineRPM()), m_cacheRpm);
+    writeIfChanged(16, 0, formatGas(gasPct),           m_cacheGas);
 
     // Row 1: "00 km/h            00 Cº" (20 cols total)
     // Speed right-aligned to finish cleanly at km/h, Temp right-aligned at the end with degree symbol.
@@ -321,9 +323,12 @@ void DisplayManager::updateField(DisplayField field) {
         case DisplayField::RPM:
             writeIfChanged(5, 0, formatRpm(v.getEngineRPM()), m_cacheRpm);
             break;
-        case DisplayField::GAS:
-            writeIfChanged(16, 0, formatGas(v.getGasolineLevel()), m_cacheGas);
+        case DisplayField::GAS: {
+            float cap = v.getTankCapacity();
+            float gasPct = (cap > 0.0f) ? (v.getGasolineLevel() / cap * 100.0f) : 0.0f;
+            writeIfChanged(16, 0, formatGas(gasPct), m_cacheGas);
             break;
+        }
         case DisplayField::SPEED:
             writeIfChanged(0, 1, formatSpeed(v.getVehicleSpeed()), m_cacheSpeed);
             break;

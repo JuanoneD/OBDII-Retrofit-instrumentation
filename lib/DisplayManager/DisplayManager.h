@@ -22,12 +22,6 @@
  *   - STATUS_CONNECTING : "Connecting OBDII..."
  *   - STATUS_WAIT_ECU   : "OBDII Connected" / "Waiting for ECU..."
  *   - DASHBOARD         : full telemetry + RPM bar
- *
- * DASHBOARD layout (20x4):
- *   Row 0: "RPM:XXXX  GAS:XX.XL "
- *   Row 1: "VEL:XXX km/h TEMP:XXC"
- *   Row 2: "LOAD:XXX%  LTFT:XX.X "
- *   Row 3: RPM bar (0..20 full-block chars, scales 0..RPM_BAR_MAX)
  */
 
 enum class DisplayField : uint8_t {
@@ -87,7 +81,7 @@ private:
     void renderRpmBar(int rpm);
 
     static String formatRpm(int rpm);
-    static String formatGas(float liters);
+    static String formatGas(float gasPct);
     static String formatSpeed(int kmh);
     static String formatTemp(int celsius);
     static String formatLoad(float loadPct);

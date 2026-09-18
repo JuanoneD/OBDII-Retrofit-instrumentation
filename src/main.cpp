@@ -43,15 +43,6 @@ void messageSendingCallback()
     OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
     messageIndex = -1; // Reset index to -1 so that it becomes 0 on the next increment
     break;
-  case 5:
-    //OBDManager::addCommandToQueue(PID_THROTTLE_POSITION_STR); // Throttle Position
-    break;
-  case 6:
-    //OBDManager::addCommandToQueue(PID_CONTROL_MODULE_VOLTAGE_STR); // Control Module Voltage
-    break;
-  case 7:
-    //OBDManager::addCommandToQueue(PID_TIMING_ADVANCE_STR); // Timing Advance
-    break;
   default:
     messageIndex = -1; // Reset index to -1 so that it becomes 0 on the next increment
     break;
@@ -128,7 +119,7 @@ void setup() {
     // Initialize LCD (renders "Connecting OBDII..." until status changes).
 
     if (!display.begin(0x27, 20, 4, 21, 22)) {
-        Serial.println("LCD Fail");
+        DebugSerial::println("LCD Fail");
     }
 
     // Class initialization

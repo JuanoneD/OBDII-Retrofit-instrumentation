@@ -30,7 +30,7 @@ VehicleData::~VehicleData() {
 }
 
 void VehicleData::loadPersistentData() {
-    preferences.begin("OBD2_READER", true);
+    preferences.begin("OBD2_READER", false);
 
     tankCapacity = preferences.getFloat("capacity", DEFAULT_TANK_CAPACITY);
     if (!preferences.isKey("capacity")) {
@@ -171,7 +171,7 @@ float VehicleData::getGasolineLevel() const {
 
 void VehicleData::setGasolineLevel(float level) {
     gasolineLevel = level;
-    preferences.putFloat("gasLevel", gasolineLevel);
+    preferences.putFloat("fuel", gasolineLevel);
 }
 
 float VehicleData::getTankCapacity() const {
@@ -180,7 +180,7 @@ float VehicleData::getTankCapacity() const {
 
 void VehicleData::setTankCapacity(float capacity) {
     tankCapacity = capacity;
-    preferences.putFloat("tankCap", tankCapacity);
+    preferences.putFloat("capacity", tankCapacity);
 }
 
 float VehicleData::getFuelConsumptionFactor() const {
@@ -189,7 +189,7 @@ float VehicleData::getFuelConsumptionFactor() const {
 
 void VehicleData::setFuelConsumptionFactor(float factor) {
     fuelConsumptionFactor = factor;
-    preferences.putFloat("fuelFactor", fuelConsumptionFactor);
+    preferences.putFloat("factor", fuelConsumptionFactor);
 }
 
 float VehicleData::getTotalDistance() const {
@@ -198,7 +198,7 @@ float VehicleData::getTotalDistance() const {
 
 void VehicleData::setTotalDistance(float distance) {
     totalDistance = distance;
-    preferences.putFloat("totDist", totalDistance);
+    preferences.putFloat("distance", totalDistance);
 }
 
 float VehicleData::getTripConsumption() const {
@@ -207,5 +207,5 @@ float VehicleData::getTripConsumption() const {
 
 void VehicleData::setTripConsumption(float consumption) {
     tripConsumption = consumption;
-    preferences.putFloat("tripCons", tripConsumption);
+    preferences.putFloat("tripFuel", tripConsumption);
 }
