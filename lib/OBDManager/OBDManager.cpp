@@ -2,6 +2,36 @@
 #include "config.h"
 #include "CallbackManager.h"
 
+namespace {
+portMUX_TYPE foundTargetDeviceMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Protects only the SHARED handoff state between notifyCallback() (runs
+// on the Bluedroid BLE task) and sendCommand()/update() (run in loop()
+// context): messageReceived, lastCommandSentTime, currentTimeout, and the
+// pending-response handoff flags/text below.
+//
+// IMPORTANT: nothing that can allocate memory (String concatenation,
+// indexOf, remove, etc.) may run while this critical section is held.
+// On ESP32, portENTER_CRITICAL is a spinlock that can also block the
+// other core; calling malloc/realloc (which String operations can do
+// internally) while holding it is undefined-behavior-adjacent and can
+// corrupt BLE stack timing or crash outright. That is why all echo
+// stripping now happens in update(), never in notifyCallback().
+portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Only ever touched by the BLE task, sequentially (BLE notifications for
+// one characteristic are delivered one at a time, never concurrently), so
+// this needs no locking of its own. It accumulates raw bytes exactly as
+// received, WITHOUT echo stripping.
+String rawAccum;
+
+// Handoff to update(): filled by notifyCallback() under stateMux with a
+// plain assignment only (no String work while locked), consumed by
+// update() to do the actual echo-stripping/decoding off the BLE task.
+volatile bool responsePending = false;
+String pendingRawResponse;
+}
+
 bool OBDManager::isScanning = false;
 BLEAdvertisedDevice* OBDManager::foundTargetDevice = nullptr;
 BLEClient* OBDManager::pClient = nullptr;
@@ -26,11 +56,8 @@ int OBDManager::obdDisconnectedFlag = 0;
 int OBDManager::obdConnectionAttemptFlag = 0;
 RawMessageCallback OBDManager::rawMessageCallback = nullptr;
 
-OBDManager::OBDManager() {
-}
-
-OBDManager::~OBDManager() {
-}
+OBDManager::OBDManager() {}
+OBDManager::~OBDManager() {}
 
 void OBDManager::onScanCompleted(BLEScanResults scanResults) {
     BLEScan* pBLEScan = BLEDevice::getScan();
@@ -48,10 +75,15 @@ void OBDManager::onScanCompleted(BLEScanResults scanResults) {
 
         if (nameMatch || serviceMatch) {
             DebugSerial::println("Found adapter: " + String(device.getAddress().toString().c_str()));
-            if (foundTargetDevice != nullptr) {
-                delete foundTargetDevice;
-            }
-            foundTargetDevice = new BLEAdvertisedDevice(device);
+            BLEAdvertisedDevice* newTargetDevice = new BLEAdvertisedDevice(device);
+            BLEAdvertisedDevice* previousTargetDevice = nullptr;
+
+            portENTER_CRITICAL(&foundTargetDeviceMux);
+            previousTargetDevice = foundTargetDevice;
+            foundTargetDevice = newTargetDevice;
+            portEXIT_CRITICAL(&foundTargetDeviceMux);
+
+            if (previousTargetDevice != nullptr) delete previousTargetDevice;
             adapterFound = true;
             break;
         }
@@ -73,13 +105,8 @@ void OBDManager::scanAndConnect() {
         callbackInit = true;
     }
 
-    if (isScanning) {
-        return;
-    }
-
-    if (pClient != nullptr && pClient->isConnected()) {
-        return;
-    }
+    if (isScanning) return;
+    if (pClient != nullptr && pClient->isConnected()) return;
 
     DebugSerial::println("BLE Scan started (asynchronous)");
     obdConnectionAttemptFlag = 1;
@@ -130,6 +157,23 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
         return;
     }
 
+    DebugSerial::println(String("pCharTX canWrite: ") + (pCharTX->canWrite() ? "yes" : "no") +
+                      " canWriteNoResponse: " + (pCharTX->canWriteNoResponse() ? "yes" : "no"));
+
+    // Reset state BEFORE registering for notifications, so there is no
+    // window where a stray/late notification could be processed against
+    // leftover state from a previous connection.
+    rawAccum = "";
+    echoDisabled = false;
+    lastCommandSent = "";
+    lastResponse = "";
+    pendingRawResponse = "";
+
+    portENTER_CRITICAL(&stateMux);
+    messageReceived = true;
+    responsePending = false;
+    portEXIT_CRITICAL(&stateMux);
+
     if (pCharRX->canNotify()) {
         pCharRX->registerForNotify([](BLERemoteCharacteristic* c, uint8_t* pData, size_t length, bool isNotify) {
             OBDManager::notifyCallback(c, pData, length, isNotify);
@@ -138,12 +182,7 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
 
     DebugSerial::println("Characteristics ready, queuing configuration commands...");
 
-    // Reset all state for a new connection, including echo
-    // (the ATZ resets the adapter, so echo returns to being enabled by default)
     clearCommandQueue();
-    messageReceived = true;
-    echoDisabled = false;
-    lastCommandSent = "";
 
     addCommandToQueue("ATZ");
     addCommandToQueue("ATE0");
@@ -156,93 +195,108 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
     obdConnectedFlag = 1;
 }
 
+// Only ever called from loop()-context.
 void OBDManager::sendCommand(String command) {
     if (pClient == nullptr || !pClient->isConnected() || pCharTX == nullptr) {
         DebugSerial::println("Cannot send command, BLE not ready: " + command);
         return;
     }
 
-    // Trim and validate command
     String trimmedCommand = command;
     trimmedCommand.trim();
-    
-    // Don't send empty commands
+
     if (trimmedCommand.length() == 0) {
         DebugSerial::println("WARNING: Empty command sending");
-        messageReceived = true;  // Reset state
+        portENTER_CRITICAL(&stateMux);
+        messageReceived = true;
+        portEXIT_CRITICAL(&stateMux);
         return;
     }
-    
-    lastCommandSent = trimmedCommand;
 
     if (!command.endsWith("\r")) command += "\r";
-    DebugSerial::println("Sending: " + trimmedCommand);
 
+    unsigned long timeoutToUse = trimmedCommand.startsWith("AT") ? AT_COMMAND_TIMEOUT : DEFAULT_TIMEOUT;
+
+    // loop()-context only from here on for lastCommandSent/lastResponse/
+    // rawAccum, so no lock needed for those; only the flags/timestamp
+    // shared with the BLE task go through stateMux.
+    lastCommandSent = trimmedCommand;
     lastResponse = "";
+    rawAccum = "";
+
+    portENTER_CRITICAL(&stateMux);
     messageReceived = false;
     lastCommandSentTime = millis();
-    currentTimeout = trimmedCommand.startsWith("AT") ? AT_COMMAND_TIMEOUT : DEFAULT_TIMEOUT;
+    currentTimeout = timeoutToUse;
+    portEXIT_CRITICAL(&stateMux);
 
-    pCharTX->writeValue((uint8_t*)command.c_str(), command.length(), false);
+    unsigned long writeStart = millis();
+
+    pCharTX->writeValue((uint8_t*)command.c_str(), command.length(), true);
+    bool ok = true;
+
+    unsigned long writeDuration = millis() - writeStart;
+
+    DebugSerial::println("Sending: " + trimmedCommand +
+                          " | write-with-response ok=1" +
+                          " tomou " + String(writeDuration) + "ms");
+
+    if (!ok) {
+        portENTER_CRITICAL(&stateMux);
+        messageReceived = true;
+        portEXIT_CRITICAL(&stateMux);
+    }
 }
 
+// Runs on the Bluedroid BLE task, NOT on loop(). Keep this fast and
+// allocation-free while holding stateMux: only plain assignments are
+// allowed inside the critical section. String concatenation/indexOf/
+// remove can trigger malloc/realloc internally, and doing that while a
+// portMUX spinlock is held is what breaks things under fast, back-to-back
+// command traffic (low delay) even though it "mostly works" with bigger
+// delays between commands. All echo stripping now happens in update().
 void OBDManager::notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-    if (messageReceived == true) {
-        DebugSerial::println("Warning: Unexpected notification while idle, discarding");
+    bool alreadyDone;
+    portENTER_CRITICAL(&stateMux);
+    alreadyDone = messageReceived;
+    portEXIT_CRITICAL(&stateMux);
+    if (alreadyDone) return;
+
+    // Accumulate raw bytes and scan for the terminator OUTSIDE the
+    // critical section. rawAccum is touched only by this task, so no
+    // lock is needed for it.
+    for (size_t i = 0; i < length; i++) {
+        rawAccum += (char)pData[i];
+    }
+
+    if (rawAccum.indexOf('>') == -1) {
         return;
     }
 
-    for (int i = 0; i < length; i++) {
-        lastResponse += (char)pData[i];
-    }
+    String finished = rawAccum;
+    rawAccum = "";
 
-    // While the echo hasn't been confirmed as disabled, the adapter sends
-    // the command itself back before (or together with) the real response.
-    // Remove that part of the buffer so it isn't mistaken for ECU data.
-    if (!echoDisabled && lastCommandSent.length() > 0) {
-        int echoIndex = lastResponse.indexOf(lastCommandSent);
-        if (echoIndex != -1) {
-            DebugSerial::println("Echo detected, removing: \"" + lastCommandSent + "\"");
-            lastResponse.remove(echoIndex, lastCommandSent.length());
-
-            // clear leftover CR/LF that remain right after the echo
-            while (lastResponse.length() > 0 && (lastResponse[0] == '\r' || lastResponse[0] == '\n')) {
-                lastResponse.remove(0, 1);
-            }
-        }
-    }
-
-    if (lastResponse.indexOf('>') != -1) {
-        String cleanResponse = lastResponse;
-        cleanResponse.trim();
-
-        if (cleanResponse.length() > 0) {
-            DebugSerial::println("Message Received: " + cleanResponse);
-        }
-
-        if (!echoDisabled && lastCommandSent == "ATE0" && cleanResponse.indexOf("OK") != -1) {
-            echoDisabled = true;
-            DebugSerial::println("Echo successfully disabled (ATE0 confirmed)");
-        }
-
+    portENTER_CRITICAL(&stateMux);
+    if (!messageReceived) {
+        pendingRawResponse = finished;
         messageReceived = true;
-        lastResponse = "";
-
-        sendMessageFlag = 1; // wake up update() on the next loop() cycle
-        if (rawMessageCallback) {
-            rawMessageCallback(cleanResponse);
-        }
+        responsePending = true;
+        sendMessageFlag = 1;
     }
+    portEXIT_CRITICAL(&stateMux);
 }
 
 void OBDManager::clearCommandQueue() {
-    while (!commandQueue.empty()) {
-        commandQueue.pop();
-    }
+    while (!commandQueue.empty()) commandQueue.pop();
 }
 
 void OBDManager::addCommandToQueue(const String& command) {
-    if (commandQueue.empty() && messageReceived) {
+    bool canSendNow;
+    portENTER_CRITICAL(&stateMux);
+    canSendNow = commandQueue.empty() && messageReceived;
+    portEXIT_CRITICAL(&stateMux);
+
+    if (canSendNow) {
         sendCommand(command);
         return;
     }
@@ -250,29 +304,92 @@ void OBDManager::addCommandToQueue(const String& command) {
 }
 
 void OBDManager::update() {
-    // If an adapter was detected by the async scan, connect to it now in the main loop thread
-    if (foundTargetDevice != nullptr) {
-        BLEAdvertisedDevice target = *foundTargetDevice;
-        delete foundTargetDevice;
-        foundTargetDevice = nullptr;
+    BLEAdvertisedDevice* targetDevice = nullptr;
+    portENTER_CRITICAL(&foundTargetDeviceMux);
+    targetDevice = foundTargetDevice;
+    foundTargetDevice = nullptr;
+    portEXIT_CRITICAL(&foundTargetDeviceMux);
+
+    if (targetDevice != nullptr) {
+        BLEAdvertisedDevice target = *targetDevice;
+        delete targetDevice;
         connectToDevice(target);
         return;
     }
 
-    // Process pending send from command queue
-    if (messageReceived && !commandQueue.empty()) {
-        sendCommand(commandQueue.front());
-        commandQueue.pop();
+    // Pull the raw response out of the shared handoff (cheap, lock held
+    // only for the assignment/flag copy), then do all the actual String
+    // work — echo stripping, OK detection, decode() — here, off the BLE
+    // task.
+    bool hasResponse = false;
+    String rawResponse;
+    portENTER_CRITICAL(&stateMux);
+    if (responsePending) {
+        hasResponse = true;
+        rawResponse = pendingRawResponse;
+        responsePending = false;
+    }
+    portEXIT_CRITICAL(&stateMux);
+
+    if (hasResponse) {
+        String processed = rawResponse;
+        bool echoJustDisabled = false;
+
+        // Echo stripping now runs entirely in loop() context.
+        if (!echoDisabled && lastCommandSent.length() > 0) {
+            int echoIndex = processed.indexOf(lastCommandSent);
+            if (echoIndex != -1) {
+                processed.remove(echoIndex, lastCommandSent.length());
+            }
+        }
+        while (processed.length() > 0 && (processed[0] == '\r' || processed[0] == '\n')) {
+            processed.remove(0, 1);
+        }
+        processed.trim();
+
+        if (!echoDisabled && lastCommandSent == "ATE0" && processed.indexOf("OK") != -1) {
+            echoDisabled = true;
+            echoJustDisabled = true;
+        }
+
+        if (processed.length() > 0) {
+            DebugSerial::println("Message Received: " + processed);
+        }
+        if (echoJustDisabled) {
+            DebugSerial::println("Echo successfully disabled (ATE0 confirmed)");
+        }
+        if (rawMessageCallback) {
+            rawMessageCallback(processed);
+        }
     }
 
-    // Check for timeout
+    bool canSendNext;
+    portENTER_CRITICAL(&stateMux);
+    canSendNext = messageReceived;
+    portEXIT_CRITICAL(&stateMux);
+
+    if (canSendNext && !commandQueue.empty()) {
+        String next = commandQueue.front();
+        commandQueue.pop();
+        sendCommand(next);
+    }
+
+    bool timedOut = false;
+    String timedOutCommand;
+    portENTER_CRITICAL(&stateMux);
     if (!messageReceived && lastCommandSentTime > 0) {
         unsigned long elapsed = millis() - lastCommandSentTime;
         if (elapsed >= currentTimeout) {
-            DebugSerial::println("ERROR: Timeout waiting for response to: " + lastCommandSent);
-            messageReceived = true;  // Reset state to allow next command
-            lastResponse = "";
+            timedOut = true;
+            timedOutCommand = lastCommandSent;
+            messageReceived = true;
         }
+    }
+    portEXIT_CRITICAL(&stateMux);
+
+    if (timedOut) {
+        rawAccum = "";
+        DebugSerial::println("ERROR: Timeout waiting for response to: " + timedOutCommand);
     }
 
     static bool wasConnected = false;
