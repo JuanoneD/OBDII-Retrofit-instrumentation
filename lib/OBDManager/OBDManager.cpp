@@ -6,7 +6,7 @@ namespace {
 portMUX_TYPE foundTargetDeviceMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Protects OBD communication state (lastResponse, lastCommandSent,
-// messageReceived, lastCommandSentTime, currentTimeout, echoDisabled),
+// messageReceived, lastCommandSentTime, currentTimeout),
 // since these are written both by notifyCallback() (runs on the Bluedroid
 // BLE task) and by sendCommand()/update() (run in loop() context).
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -16,7 +16,6 @@ portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 // BLE task itself.
 volatile bool responsePending = false;
 String pendingResponseText;
-bool pendingEchoJustDisabled = false;
 }
 
 bool OBDManager::isScanning = false;
@@ -27,7 +26,6 @@ BLERemoteCharacteristic* OBDManager::pCharRX = nullptr;
 BLEUUID OBDManager::serviceUUID(OBDII_SERVICE_UUID);
 BLEUUID OBDManager::charUUID_TX(OBDII_CHAR_UUID_TX);
 BLEUUID OBDManager::charUUID_RX(OBDII_CHAR_UUID_RX);
-bool OBDManager::echoDisabled = false;
 String OBDManager::lastCommandSent = "";
 bool OBDManager::messageReceived = false;
 bool OBDManager::pendingSend = false;
@@ -157,7 +155,6 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
 
     portENTER_CRITICAL(&stateMux);
     messageReceived = true;
-    echoDisabled = false;
     lastCommandSent = "";
     lastResponse = "";
     responsePending = false;
@@ -176,7 +173,6 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
     obdConnectedFlag = 1;
 }
 
-// Only ever called from loop()-context.
 // Only ever called from loop()-context.
 void OBDManager::sendCommand(String command) {
     if (pClient == nullptr || !pClient->isConnected() || pCharTX == nullptr) {
@@ -230,8 +226,8 @@ void OBDManager::sendCommand(String command) {
 
 // Runs on the Bluedroid BLE task, NOT on loop(). Keep this fast: only
 // append bytes and, once a full response is detected, stash it for
-// update() to process. No String parsing beyond echo/terminator
-// detection, no calls to rawMessageCallback, no prints here.
+// update() to process. No String parsing beyond terminator detection,
+// no calls to rawMessageCallback, no prints here.
 void OBDManager::notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     portENTER_CRITICAL(&stateMux);
 
@@ -244,25 +240,9 @@ void OBDManager::notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristi
         lastResponse += (char)pData[i];
     }
 
-    if (!echoDisabled && lastCommandSent.length() > 0) {
-        int echoIndex = lastResponse.indexOf(lastCommandSent);
-        if (echoIndex != -1) {
-            lastResponse.remove(echoIndex, lastCommandSent.length());
-            while (lastResponse.length() > 0 && (lastResponse[0] == '\r' || lastResponse[0] == '\n')) {
-                lastResponse.remove(0, 1);
-            }
-        }
-    }
-
     if (lastResponse.indexOf('>') != -1) {
         pendingResponseText = lastResponse;
         pendingResponseText.trim();
-
-        pendingEchoJustDisabled = false;
-        if (!echoDisabled && lastCommandSent == "ATE0" && pendingResponseText.indexOf("OK") != -1) {
-            echoDisabled = true;
-            pendingEchoJustDisabled = true;
-        }
 
         messageReceived = true;
         lastResponse = "";
@@ -308,12 +288,10 @@ void OBDManager::update() {
     // Serial prints happen here, safely off the BLE task.
     bool hasResponse = false;
     String responseToProcess;
-    bool echoJustDisabled = false;
     portENTER_CRITICAL(&stateMux);
     if (responsePending) {
         hasResponse = true;
         responseToProcess = pendingResponseText;
-        echoJustDisabled = pendingEchoJustDisabled;
         responsePending = false;
     }
     portEXIT_CRITICAL(&stateMux);
@@ -321,9 +299,6 @@ void OBDManager::update() {
     if (hasResponse) {
         if (responseToProcess.length() > 0) {
             DebugSerial::println("Message Received: " + responseToProcess);
-        }
-        if (echoJustDisabled) {
-            DebugSerial::println("Echo successfully disabled (ATE0 confirmed)");
         }
         if (rawMessageCallback) {
             rawMessageCallback(responseToProcess);

@@ -10,7 +10,7 @@
 // Serial Communication & Debugging
 // -----------------------------------------------------------------------------
 #define SERIAL_BAUD_RATE            115200
-#define DEBUG_SERIAL_ENABLED        false
+#define DEBUG_SERIAL_ENABLED        true
 
 // -----------------------------------------------------------------------------
 // Hardware Pinout (ESP32)

@@ -134,7 +134,7 @@ void setup() {
 
     // Timers
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
-    ecuMessagesSenderID = CallbackManager::addTimer(200, messageSendingCallback);
+    ecuMessagesSenderID = CallbackManager::addTimer(400, messageSendingCallback);
     fuelCalculatorID = CallbackManager::addTimer(500, []() { FuelCalculator::getInstance().update(); });
     displayUpdateID  = CallbackManager::addTimer(500, []() { display.updateAll(); });
 
