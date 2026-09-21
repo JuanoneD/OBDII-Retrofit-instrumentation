@@ -78,6 +78,7 @@ void OBDDecoder::decodeVehicleSpeed(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
     int speed = a;
+    speed *= 1.07; // Adjust for speedometer calibration (7% increase)
     VehicleData::getInstance().setVehicleSpeed(speed);
     DebugSerial::println("Speed: " + String(speed) + " km/h");
 }

@@ -5,9 +5,15 @@
 #include "DebugSerial.h"
 #include "OBDDecoder.h"
 #include "VehicleData.h"
+#include "FuelCalculator.h"
+#include "DisplayManager.h"
+
+DisplayManager display;
 
 uint32_t startOBDIIConnectionID = 0;
 uint32_t ecuMessagesSenderID = 0;
+uint32_t fuelCalculatorID = 0;
+uint32_t displayUpdateID = 0;
 
 int messageIndex = 0;
 
@@ -22,24 +28,20 @@ void messageSendingCallback()
     break;
   case 1:
     OBDManager::addCommandToQueue(PID_VEHICLE_SPEED_STR); // Vehicle Speed
+    OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
     break;
   case 2:
-    //OBDManager::addCommandToQueue(PID_COOLANT_TEMP_STR); // Coolant Temp
+    OBDManager::addCommandToQueue(PID_COOLANT_TEMP_STR); // Coolant Temp
+    OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
     break;
   case 3:
-    //OBDManager::addCommandToQueue(PID_ENGINE_LOAD_STR); // Engine Load
+    OBDManager::addCommandToQueue(PID_ENGINE_LOAD_STR); // Engine Load
+    OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
     break;
   case 4:
-    //OBDManager::addCommandToQueue(PID_TIMING_ADVANCE_STR); // Timing Advance
-    break;
-  case 5:
-    //OBDManager::addCommandToQueue(PID_THROTTLE_POSITION_STR); // Throttle Position
-    break;
-  case 6:
-    //OBDManager::addCommandToQueue(PID_CONTROL_MODULE_VOLTAGE_STR); // Control Module Voltage
-    break;
-  case 7:
-    //OBDManager::addCommandToQueue(PID_LONG_TERM_FUEL_TRIM_STR); // Long Term Fuel Trim
+    OBDManager::addCommandToQueue(PID_LONG_TERM_FUEL_TRIM_STR); // Long Term Fuel Trim
+    OBDManager::addCommandToQueue(PID_ENGINE_RPM_STR); // RPM
+    messageIndex = -1; // Reset index to -1 so that it becomes 0 on the next increment
     break;
   default:
     messageIndex = -1; // Reset index to -1 so that it becomes 0 on the next increment
@@ -56,6 +58,7 @@ void setObdStatustoConnected()
   VehicleData::getInstance().setObdiiStatus(OBDIISTATUS::CONNECTED);
   DebugSerial::println("OBDII Connected!");
   CallbackManager::resumeTimer(ecuMessagesSenderID);
+  CallbackManager::resumeTimer(fuelCalculatorID);
 }
 
 void setEcuStatustoOnline()
@@ -84,6 +87,7 @@ void setObdStatustoOffline()
 
   CallbackManager::resumeTimer(startOBDIIConnectionID);
   CallbackManager::pauseTimer(ecuMessagesSenderID);
+  CallbackManager::pauseTimer(fuelCalculatorID);
 
   setEcuStatustoOffline();
   OBDManager::clearCommandQueue();
@@ -109,6 +113,15 @@ void setup() {
     // Initialize persistent data
     VehicleData::getInstance().loadPersistentData();
 
+    // Initialize fuel consumption calculator (loads K from NVS)
+    FuelCalculator::getInstance().begin();
+
+    // Initialize LCD (renders "Connecting OBDII..." until status changes).
+
+    if (!display.begin(0x27, 20, 4, 21, 22)) {
+        DebugSerial::println("LCD Fail");
+    }
+
     // Class initialization
     OBDManager::setRawMessageCallback(OBDDecoder::decode);
 
@@ -122,9 +135,12 @@ void setup() {
     // Timers
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
     ecuMessagesSenderID = CallbackManager::addTimer(400, messageSendingCallback);
+    fuelCalculatorID = CallbackManager::addTimer(500, []() { FuelCalculator::getInstance().update(); });
+    displayUpdateID  = CallbackManager::addTimer(500, []() { display.updateAll(); });
 
     // Timers control
     CallbackManager::pauseTimer(ecuMessagesSenderID);
+    CallbackManager::pauseTimer(fuelCalculatorID);
   }
 
 void loop() {
