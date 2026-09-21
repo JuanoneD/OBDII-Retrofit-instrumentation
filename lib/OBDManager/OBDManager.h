@@ -51,7 +51,6 @@ private:
     static BLEUUID charUUID_RX;
     
     // State variables
-    static bool echoDisabled;
     static String lastCommandSent;
     static bool messageReceived;
     static bool pendingSend;
