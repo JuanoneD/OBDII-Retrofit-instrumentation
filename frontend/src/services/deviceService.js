@@ -1,4 +1,4 @@
-import { extractNewFactor } from '../utils/fuel.js'
+import { extractNewFactor, normalizeDeviceData } from '../utils/fuel.js'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(
   /\/$/,
@@ -94,6 +94,57 @@ export async function recalculateFuel({ deviceId, refueledGas, token }) {
 
     throw new ApiError(
       'Não foi possível conectar ao backend. Verifique a API e tente novamente.',
+    )
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
+export async function getDevice({ deviceId, token }) {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
+  const headers = {
+    Accept: 'application/json',
+  }
+
+  if (token.trim()) {
+    headers.Authorization = `Bearer ${normalizeToken(token)}`
+  }
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/devices?idDevice=${encodeURIComponent(deviceId)}`,
+      {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+      },
+    )
+    const payload = await readResponse(response)
+
+    if (!response.ok) {
+      throw new ApiError(
+        getApiErrorMessage(response.status, payload),
+        response.status,
+        payload,
+      )
+    }
+
+    return {
+      payload,
+      device: normalizeDeviceData(payload),
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new ApiError('A API demorou para responder. Tente novamente.')
+    }
+
+    if (error instanceof ApiError) {
+      throw error
+    }
+
+    throw new ApiError(
+      'Não foi possível carregar os dados do veículo. Verifique a API.',
     )
   } finally {
     window.clearTimeout(timeout)
