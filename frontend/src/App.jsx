@@ -78,27 +78,11 @@ function App() {
       <header className="screen-header">
         <p>OBD-II RETROFIT</p>
         <h1>Calibração de Combustível</h1>
+        <span>Informe os litros adicionados no último abastecimento.</span>
       </header>
-
-      <section className="fuel-reading" aria-label="Combustível estimado">
-        <h2>Combustível estimado</h2>
-        <strong>--,-- L</strong>
-        <span>Aguardando dados do veículo</span>
-      </section>
 
       <form className="calibration-form" onSubmit={handleSubmit} noValidate>
         <h2>Calibrar consumo</h2>
-
-        <label htmlFor="device-id">Identificador do veículo</label>
-        <input
-          id="device-id"
-          name="deviceId"
-          type="text"
-          autoComplete="off"
-          placeholder="Ex.: ESP32-A1B2C3D4"
-          value={deviceId}
-          onChange={(event) => setDeviceId(event.target.value)}
-        />
 
         <label htmlFor="liters">Quanto de gasolina entrou no posto?</label>
         <div className="liters-field">
@@ -116,7 +100,18 @@ function App() {
         </div>
 
         <details>
-          <summary>Configuração de acesso à API</summary>
+          <summary>Configuração temporária de acesso</summary>
+          <label htmlFor="device-id">Identificador do veículo</label>
+          <input
+            id="device-id"
+            name="deviceId"
+            type="text"
+            autoComplete="off"
+            placeholder="Ex.: A1B2C3D4E5F6"
+            value={deviceId}
+            onChange={(event) => setDeviceId(event.target.value)}
+          />
+
           <label htmlFor="token">Token JWT</label>
           <textarea
             id="token"
