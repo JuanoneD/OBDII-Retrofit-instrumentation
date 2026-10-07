@@ -25,17 +25,17 @@ textarea {
 }
 
 .fuel-screen {
-  width: min(100%, 500px);
+  width: min(100%, 480px);
   min-height: calc(100vh - 84px);
   margin: 0 auto;
-  padding: 44px 30px 28px;
+  padding: 46px 30px 28px;
   border: 1px solid #252525;
   border-radius: 38px;
   background: #101010;
 }
 
 .screen-header {
-  margin-bottom: 30px;
+  margin-bottom: 34px;
   text-align: center;
 }
 
@@ -55,34 +55,12 @@ h1 {
   line-height: 1.2;
 }
 
-.vehicle-label {
-  display: block;
-  overflow: hidden;
-  margin-top: 10px;
-  color: #858585;
-  font-size: 0.7rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fuel-reading,
-.calibration-form {
+.fuel-reading {
+  padding: 24px 20px 25px;
   border: 1px solid #383838;
   border-radius: 10px;
   background: #191919;
-}
-
-.fuel-reading {
-  padding: 22px 20px;
   text-align: center;
-}
-
-.reading-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 15px;
-  text-align: left;
 }
 
 .fuel-reading h2,
@@ -93,101 +71,25 @@ h1 {
   font-weight: 500;
 }
 
-.refresh-button {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: #57d85e;
-  cursor: pointer;
-  font-size: 0.68rem;
-  font-weight: 700;
-}
-
-.refresh-button:disabled {
-  cursor: wait;
-  color: #777;
-}
-
-.fuel-value {
+.fuel-reading strong {
   display: block;
-  margin: 21px 0 7px;
-  color: #5ae161;
-  font-size: 2.45rem;
+  margin: 19px 0 10px;
+  color: #22e52d;
+  font-size: 2.35rem;
   font-weight: 500;
 }
 
-.fuel-value small {
-  font-size: 1.55rem;
-  font-weight: 500;
-}
-
-.fuel-percentage {
-  color: #b5b5b5;
-  font-size: 0.8rem;
-}
-
-.fuel-progress {
-  height: 5px;
-  margin-top: 19px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: #2b2b2b;
-}
-
-.fuel-progress span {
-  display: block;
-  height: 100%;
-  background: #42cc4a;
-  transition: width 250ms ease;
-}
-
-.data-status {
-  margin: 13px 0 0;
-  font-size: 0.68rem;
-  line-height: 1.4;
-}
-
-.data-status-success {
-  color: #7edb83;
-}
-
-.data-status-error {
-  color: #e6968f;
-}
-
-.vehicle-data {
-  margin: 14px 0 28px;
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-
-.vehicle-data div {
-  min-height: 82px;
-  padding: 15px;
-  border: 1px solid #303030;
-  border-radius: 9px;
-  background: #181818;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 9px;
-}
-
-.vehicle-data span {
-  color: #868686;
-  font-size: 0.67rem;
-  line-height: 1.3;
-}
-
-.vehicle-data strong {
-  color: #e6e6e6;
-  font-size: 1rem;
-  font-weight: 500;
+.fuel-reading span {
+  color: #9c9c9c;
+  font-size: 0.78rem;
 }
 
 .calibration-form {
+  margin-top: 28px;
   padding: 24px 20px 20px;
+  border: 1px solid #383838;
+  border-radius: 10px;
+  background: #191919;
 }
 
 .calibration-form h2 {
@@ -215,6 +117,7 @@ textarea {
 
 input {
   height: 47px;
+  margin-bottom: 20px;
   padding: 0 13px;
 }
 
@@ -239,7 +142,6 @@ textarea:focus {
 }
 
 .liters-field input {
-  margin-bottom: 20px;
   padding-right: 62px;
 }
 
@@ -261,32 +163,8 @@ summary {
   font-size: 0.7rem;
 }
 
-.settings-content {
+details label {
   margin-top: 15px;
-  padding-top: 15px;
-  border-top: 1px solid #303030;
-}
-
-.settings-content input,
-.settings-content textarea {
-  margin-bottom: 17px;
-}
-
-.load-button {
-  width: 100%;
-  min-height: 42px;
-  border: 1px solid #4a4a4a;
-  border-radius: 8px;
-  background: #252525;
-  color: #d6d6d6;
-  cursor: pointer;
-  font-size: 0.67rem;
-  font-weight: 700;
-}
-
-.load-button:hover:not(:disabled) {
-  border-color: #5d5d5d;
-  background: #2c2c2c;
 }
 
 .feedback {
@@ -319,7 +197,7 @@ summary {
   margin: 2px 0 0;
 }
 
-.submit-button {
+button {
   width: 100%;
   min-height: 50px;
   border: 0;
@@ -332,12 +210,11 @@ summary {
   transition: background 120ms ease;
 }
 
-.submit-button:hover:not(:disabled) {
+button:hover:not(:disabled) {
   background: #4cde55;
 }
 
-.submit-button:disabled,
-.load-button:disabled {
+button:disabled {
   cursor: wait;
   opacity: 0.65;
 }
@@ -363,15 +240,9 @@ summary:focus-visible {
 
   .fuel-screen {
     min-height: 100vh;
-    padding: 38px 20px 28px;
+    padding: 40px 22px 28px;
     border: 0;
     border-radius: 0;
-  }
-}
-
-@media (max-width: 370px) {
-  .vehicle-data {
-    grid-template-columns: 1fr;
   }
 }
 

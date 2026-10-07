@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, getDevice, recalculateFuel } from './deviceService.js'
+import { ApiError, recalculateFuel } from './deviceService.js'
 
 describe('recalculateFuel', () => {
   beforeEach(() => {
@@ -68,54 +68,5 @@ describe('recalculateFuel', () => {
 
   it('mantém os erros da API identificáveis pela tela', () => {
     expect(new ApiError('Falha', 400)).toBeInstanceOf(Error)
-  })
-})
-
-describe('getDevice', () => {
-  beforeEach(() => {
-    vi.stubGlobal('window', {
-      setTimeout,
-      clearTimeout,
-    })
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-
-  it('consulta o veículo com id e autenticação', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: vi.fn().mockResolvedValue(
-        JSON.stringify({
-          gasolineLevel: 32.7,
-          tankCapacity: 45,
-          fuelConsumptionFactor: 1.15,
-          totalDistance: 10234.5,
-          tripConsumption: 8.2,
-        }),
-      ),
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const result = await getDevice({
-      deviceId: 'ESP32-A1/2',
-      token: 'jwt-de-teste',
-    })
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/devices?idDevice=ESP32-A1%2F2',
-      expect.objectContaining({
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          Authorization: 'Bearer jwt-de-teste',
-        },
-      }),
-    )
-    expect(result.device.gasolineLevel).toBe(32.7)
-    expect(result.device.tankCapacity).toBe(45)
   })
 })

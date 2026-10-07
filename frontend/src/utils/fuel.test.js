@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  calculateFuelPercentage,
   FuelValidationError,
   extractNewFactor,
-  formatMetric,
-  normalizeDeviceData,
   parseFuelAmount,
 } from './fuel.js'
 
@@ -36,59 +33,5 @@ describe('extractNewFactor', () => {
 
   it('retorna null quando o backend não envia o fator', () => {
     expect(extractNewFactor({ message: 'ok' })).toBeNull()
-  })
-})
-
-describe('normalizeDeviceData', () => {
-  it('normaliza os campos retornados pelo endpoint de dispositivo', () => {
-    expect(
-      normalizeDeviceData({
-        data: {
-          gasolineLevel: 32.7,
-          tankCapacity: 45,
-          fuelConsumptionFactor: 1.15,
-          totalDistance: 10234.5,
-          tripConsumption: 8.2,
-          sync_version: 3,
-        },
-      }),
-    ).toEqual({
-      gasolineLevel: 32.7,
-      tankCapacity: 45,
-      fuelConsumptionFactor: 1.15,
-      totalDistance: 10234.5,
-      tripConsumption: 8.2,
-      syncVersion: 3,
-    })
-  })
-
-  it('aceita uma lista de dispositivos e mantém ausências como null', () => {
-    expect(normalizeDeviceData([{ gasolineLevel: 10 }])).toEqual({
-      gasolineLevel: 10,
-      tankCapacity: null,
-      fuelConsumptionFactor: null,
-      totalDistance: null,
-      tripConsumption: null,
-      syncVersion: null,
-    })
-  })
-})
-
-describe('calculateFuelPercentage', () => {
-  it('calcula e limita o percentual do tanque', () => {
-    expect(calculateFuelPercentage(32.7, 45)).toBeCloseTo(72.67)
-    expect(calculateFuelPercentage(60, 45)).toBe(100)
-  })
-
-  it('não calcula sem capacidade válida', () => {
-    expect(calculateFuelPercentage(10, 0)).toBeNull()
-    expect(calculateFuelPercentage(null, 45)).toBeNull()
-  })
-})
-
-describe('formatMetric', () => {
-  it('formata números e usa marcador quando não há dado', () => {
-    expect(formatMetric(32.7)).toBe('32,7')
-    expect(formatMetric(null)).toBe('--')
   })
 })
