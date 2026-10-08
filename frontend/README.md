@@ -1,7 +1,6 @@
 # Frontend — Tela de combustível (FE-03)
 
-Primeira entrega do frontend do OBD-II Retrofit, limitada à tela de recálculo do
-fator de consumo.
+Tela de combustível do OBD-II Retrofit.
 
 ## Executar localmente
 
@@ -10,26 +9,13 @@ npm install
 npm run dev
 ```
 
-O Vite encaminha `/api` para `http://18.206.201.130:5000`, evitando problemas de
-CORS durante o desenvolvimento local.
+Esta versão apresenta a calibração do combustível com os litros abastecidos e a
+capacidade do tanque. O resultado é exibido localmente na tela, sem solicitar
+identificador de veículo ou credenciais.
 
-## Endpoint utilizado
-
-```http
-POST /devices/resetAndRecalculate?idDevice={idDevice}
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "refueledGas": 42.5
-}
-```
-
-O backend é responsável por calcular e persistir o novo fator. O frontend apenas
-valida a entrada, envia os litros abastecidos e apresenta a resposta.
-
-O identificador do dispositivo é mantido no `localStorage`. O token JWT fica
-somente no `sessionStorage`, sendo removido ao encerrar a sessão do navegador.
+O backend disponível em `http://18.206.201.130:5000` exige autenticação Bearer
+para consultar ou atualizar dispositivos. Por isso, a tela não faz chamadas
+autenticadas enquanto não houver uma sessão válida definida pelo fluxo do produto.
 
 ## Verificações
 
