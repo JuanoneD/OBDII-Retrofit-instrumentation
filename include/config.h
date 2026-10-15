@@ -60,7 +60,17 @@ using SIMSTATUS = ESIMSTATUS;
 #define SIM800_APN_USER               ""
 #define SIM800_APN_PASS               ""
 
-#define BACKEND_HTTP_ENDPOINT         "http://18.206.201.130:5000"
+// Load sensitive endpoints/credentials from secrets.h (ignored by Git)
+#if __has_include("secrets.h")
+    #include "secrets.h"
+#elif __has_include("secrets.example.h")
+    #include "secrets.example.h"
+#endif
+
+#ifndef BACKEND_HTTP_ENDPOINT
+    #define BACKEND_HTTP_ENDPOINT     "http://127.0.0.1:5000"
+#endif
+
 #define HTTP_POST_ENDPOINT            BACKEND_HTTP_ENDPOINT
 #define SIM800_HTTP_ENDPOINT          BACKEND_HTTP_ENDPOINT
 #define CELLULAR_HTTP_ENDPOINT        BACKEND_HTTP_ENDPOINT
