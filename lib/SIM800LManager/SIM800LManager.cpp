@@ -378,23 +378,25 @@ bool SIM800LManager::isSendInProgress() {
 // callback: doing so used to freeze the entire firmware (BLE, display, OBD
 // polling, everything) for the whole duration of the HTTP transaction.
 void SIM800LManager::sendTaskTrampoline(void* param) {
-    String url = m_sendTaskUrl;
+    {
+        String url = m_sendTaskUrl;
 
-    DebugSerial::println("[SIM800L] Triggering non-volatile data POST transmission...");
+        DebugSerial::println("[SIM800L] Triggering non-volatile data POST transmission...");
 
-    if (!url.endsWith("/")) url += "/";
-    url += "devices/" + getDeviceId();
-    DebugSerial::println("[SIM800L] Sending non-volatile data to: " + url);
+        if (!url.endsWith("/")) url += "/";
+        url += "devices/" + getDeviceId();
+        DebugSerial::println("[SIM800L] Sending non-volatile data to: " + url);
 
-    String payload = buildNonVolatileJson();
-    String responseBody;
-    bool ok = sendHttpPost(url, payload, &responseBody);
+        String payload = buildNonVolatileJson();
+        String responseBody;
+        bool ok = sendHttpPost(url, payload, &responseBody);
 
-    if (ok && responseBody.length() > 0) {
-        applyServerResponse(responseBody);
-    } else if (!ok) {
-        DebugSerial::println("[SIM800L] Non-volatile POST transmission failed. Running network diagnostics...");
-        logNetworkDiagnostics();
+        if (ok && responseBody.length() > 0) {
+            applyServerResponse(responseBody);
+        } else if (!ok) {
+            DebugSerial::println("[SIM800L] Non-volatile POST transmission failed. Running network diagnostics...");
+            logNetworkDiagnostics();
+        }
     }
 
     m_sendInProgress = false;
