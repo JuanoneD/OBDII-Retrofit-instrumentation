@@ -20,6 +20,9 @@ public:
     ECUSTATUS getEcuStatus() const;
     void setEcuStatus(ECUSTATUS status);
 
+    ESIMSTATUS getEsimStatus() const;
+    void setEsimStatus(ESIMSTATUS status);
+
     // --- Volatile Data (Real-time in RAM) ---
     int getEngineRPM() const;
     void setEngineRPM(int rpm);
@@ -64,6 +67,9 @@ public:
     float getTripConsumption() const;
     void setTripConsumption(float consumption);
 
+    int getSyncVersion() const;
+    void setSyncVersion(int version);
+
 private:
     VehicleData();
     ~VehicleData();
@@ -77,6 +83,7 @@ private:
     // Status attributes
     OBDIISTATUS obdiiStatus;
     ECUSTATUS ecustatus;
+    ESIMSTATUS esimStatus;
 
     // Volatile attributes
     int engineRPM;
@@ -95,13 +102,15 @@ private:
     float fuelConsumptionFactor;
     float totalDistance;
     float tripConsumption;
+    int syncVersion;
 
     // Default constants for persistence
     static constexpr float DEFAULT_GASOLINE_LEVEL = 45.0f;
     static constexpr float DEFAULT_TANK_CAPACITY = 45.0f;
-    static constexpr float DEFAULT_FUEL_CONSUMPTION_FACTOR = 0.008f;
+    static constexpr float DEFAULT_FUEL_CONSUMPTION_FACTOR = 0.000000008f;
     static constexpr float DEFAULT_TOTAL_DISTANCE = 0.0f;
     static constexpr float DEFAULT_TRIP_CONSUMPTION = 0.0f;
+    static constexpr int DEFAULT_SYNC_VERSION = 0;
 };
 
 #endif // VEHICLE_DATA_H

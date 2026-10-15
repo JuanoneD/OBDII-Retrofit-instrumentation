@@ -40,8 +40,16 @@ void FuelCalculator::update() {
     float rpm       = static_cast<float>(vd.getEngineRPM());
     float load      = vd.getEngineLoad();          // %
     float rawLtft   = vd.getLongTermFuelTrim();    // % (ex: -10.0, 5.0, etc.)
+    float speedKmh  = static_cast<float>(vd.getVehicleSpeed()); // km/h
 
     if (vd.getObdiiStatus() != OBDIISTATUS::CONNECTED || vd.getEcuStatus() != ECUSTATUS::ONLINE || rpm <= 0.0f) return;
+
+    // 2b. Accumulate total distance travelled (odometer) from vehicle speed.
+    // speed (km/h) * dt (s) / 3600 (s/h) = distance travelled in km during this tick.
+    if (speedKmh > 0.0f) {
+        float distanceDeltaKm = (speedKmh * dt) / 3600.0f;
+        vd.setTotalDistance(vd.getTotalDistance() + distanceDeltaKm);
+    }
 
     // 3. Convert LTFT percentage to a multiplicative correction factor (e.g., -10% -> 0.90, +5% -> 1.05)
     float ltftMultiplier = 1.0f + (rawLtft / 100.0f);

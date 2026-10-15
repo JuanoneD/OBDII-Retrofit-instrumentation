@@ -139,11 +139,11 @@ String DisplayManager::formatLtft(float trimPct) {
     if (trimPct < -99.0f) trimPct = -99.0f;
     if (trimPct > 99.0f)  trimPct = 99.0f;
     
-    // Arredonda corretamente o float para inteiro (ex: 3.2 -> 3, -1.2 -> -1)
+    // Correctly round float to integer (e.g. 3.2 -> 3, -1.2 -> -1)
     int val = (int)(trimPct + (trimPct >= 0 ? 0.5f : -0.5f));
     
     char buf[8];
-    // Formata explicitamente com o sinal (+ ou -) seguido do número e do '%'
+    // Explicitly format with sign (+ or -) followed by the number and '%'
     snprintf(buf, sizeof(buf), "%+d%% ", val);
     return String(buf);
 }
@@ -249,7 +249,7 @@ void DisplayManager::renderDashboard() {
     writeIfChanged(5,  2, formatLoad(v.getEngineLoad()),        m_cacheLoad);
     writeIfChanged(16, 2, formatLtft(v.getLongTermFuelTrim()),  m_cacheLtft);
 
-    // Row 3: RPM bar (intocada)
+    // Row 3: RPM bar (untouched)
     renderRpmBar(v.getEngineRPM());
 }
 

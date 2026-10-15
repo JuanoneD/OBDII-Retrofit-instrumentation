@@ -7,6 +7,7 @@
 #include "VehicleData.h"
 #include "FuelCalculator.h"
 #include "DisplayManager.h"
+#include "SIM800LManager.h"
 
 DisplayManager display;
 
@@ -14,6 +15,7 @@ uint32_t startOBDIIConnectionID = 0;
 uint32_t ecuMessagesSenderID = 0;
 uint32_t fuelCalculatorID = 0;
 uint32_t displayUpdateID = 0;
+uint32_t cellularSenderID = 0;
 
 int messageIndex = 0;
 
@@ -107,6 +109,33 @@ void startOBDIIConnection()
     OBDManager::scanAndConnect();
 }
 
+void setEsimStatustoConnected()
+{
+  if (VehicleData::getInstance().getEsimStatus() == ESIMSTATUS::CONNECTED) return;
+
+  VehicleData::getInstance().setEsimStatus(ESIMSTATUS::CONNECTED);
+  DebugSerial::println("eSIM Connected!");
+  CallbackManager::resumeTimer(cellularSenderID);
+}
+
+void setEsimStatustoDisconnected()
+{
+  if (VehicleData::getInstance().getEsimStatus() == ESIMSTATUS::DISCONNECTED) return;
+
+  VehicleData::getInstance().setEsimStatus(ESIMSTATUS::DISCONNECTED);
+  DebugSerial::println("eSIM Disconnected!");
+  CallbackManager::pauseTimer(cellularSenderID);
+}
+
+void setEsimStatustoWithoutSim()
+{
+  if (VehicleData::getInstance().getEsimStatus() == ESIMSTATUS::WITHOUT_SIM) return;
+
+  VehicleData::getInstance().setEsimStatus(ESIMSTATUS::WITHOUT_SIM);
+  DebugSerial::println("eSIM: Without SIM!");
+  CallbackManager::pauseTimer(cellularSenderID);
+}
+
 void setup() {
     DebugSerial::begin();
 
@@ -124,6 +153,7 @@ void setup() {
 
     // Class initialization
     OBDManager::setRawMessageCallback(OBDDecoder::decode);
+    SIM800LManager::begin();
 
     // Signals
     CallbackManager::addFlagWatcher(&OBDManager::obdConnectedFlag,setObdStatustoConnected);
@@ -132,15 +162,33 @@ void setup() {
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_online_flag,setEcuStatustoOnline);
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_offline_flag,setEcuStatustoOffline);
 
+    // eSIM Signals
+    CallbackManager::addFlagWatcher(&SIM800LManager::esimConnectedFlag, setEsimStatustoConnected);
+    CallbackManager::addFlagWatcher(&SIM800LManager::esimDisconnectedFlag, setEsimStatustoDisconnected);
+    CallbackManager::addFlagWatcher(&SIM800LManager::esimWithoutSimFlag, setEsimStatustoWithoutSim);
+
     // Timers
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
     ecuMessagesSenderID = CallbackManager::addTimer(400, messageSendingCallback);
     fuelCalculatorID = CallbackManager::addTimer(500, []() { FuelCalculator::getInstance().update(); });
     displayUpdateID  = CallbackManager::addTimer(500, []() { display.updateAll(); });
+    cellularSenderID = CallbackManager::addTimer(CELLULAR_SEND_INTERVAL_MS, []() { SIM800LManager::sendNonVolatileData(); });
 
     // Timers control
     CallbackManager::pauseTimer(ecuMessagesSenderID);
     CallbackManager::pauseTimer(fuelCalculatorID);
+    // NOTE: cellularSenderID is intentionally NOT paused here.
+    // It used to be paused, resumed only by setEsimStatustoConnected()
+    // (triggered by SIM800LManager::esimConnectedFlag). But esimConnectedFlag
+    // is only set as a side effect of a successful connectGPRS(), which is
+    // only ever called from inside sendHttpPost(), which is only ever called
+    // from sendNonVolatileData() - i.e. from this very timer's callback.
+    // With the timer paused from the start, it would never fire once, so
+    // GPRS would never get a chance to connect, so the flag would never be
+    // set, so the timer would stay paused forever: sendNonVolatileData()
+    // was never actually being called. sendHttpPost()/connectGPRS() already
+    // handle connecting on demand and no-op safely if hardware isn't ready,
+    // so it's safe to just let this timer run from the start.
   }
 
 void loop() {
