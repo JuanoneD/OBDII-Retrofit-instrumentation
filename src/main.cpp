@@ -124,7 +124,7 @@ void setEsimStatustoDisconnected()
 
   VehicleData::getInstance().setEsimStatus(ESIMSTATUS::DISCONNECTED);
   DebugSerial::println("eSIM Disconnected!");
-  CallbackManager::pauseTimer(cellularSenderID);
+  CallbackManager::resumeTimer(cellularSenderID);
 }
 
 void setEsimStatustoWithoutSim()
