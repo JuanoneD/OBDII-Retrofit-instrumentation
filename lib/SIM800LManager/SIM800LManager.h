@@ -153,6 +153,17 @@ private:
     static String getDeviceId();
     static void applyServerResponse(const String& body);
 
+    // Throttled background recovery for permanent-looking failure states
+    // (hardware not responding / SIM not inserted). Called from update() on
+    // a cooldown so a modem that becomes responsive again, or a SIM that is
+    // inserted/activated later, can restore telemetry without a device
+    // restart.
+    static void tryRecover();
+    static unsigned long m_lastRecoveryAttemptMs;
+    static unsigned long m_baudRateForRecovery;
+    static int8_t m_rxPinForRecovery;
+    static int8_t m_txPinForRecovery;
+
     // Background send task state (see sendNonVolatileData()).
     static volatile bool m_sendInProgress;
     static String m_sendTaskUrl;

@@ -15,7 +15,8 @@
  *
  * Where:
  *   - RPM, EngineLoad, LongTermFuelTrim come from VehicleData (volatile).
- *   - K is the calibration factor loaded from NVS (fuelConsumptionFactor).
+ *   - K is the calibration factor, read fresh from VehicleData (NVS-backed)
+ *     on every update() call so backend calibration changes apply immediately.
  *   - dt is the elapsed time (seconds) since the last update() call.
  */
 class FuelCalculator {
@@ -37,9 +38,9 @@ private:
     FuelCalculator(const FuelCalculator&) = delete;
     FuelCalculator& operator=(const FuelCalculator&) = delete;
 
-    float k;                 // Calibration factor loaded from NVS
     uint32_t lastUpdateMs;   // Timestamp of the last update() call
     bool initialized;
+    bool wasLinkUp;          // Tracks OBD/ECU link state to detect reconnection
 };
 
 #endif // FUEL_CALCULATOR_H

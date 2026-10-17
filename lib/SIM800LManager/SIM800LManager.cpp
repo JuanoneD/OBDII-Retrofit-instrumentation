@@ -35,6 +35,11 @@ volatile bool SIM800LManager::m_sendInProgress = false;
 String SIM800LManager::m_sendTaskUrl = "";
 SemaphoreHandle_t SIM800LManager::m_serialMutex = nullptr;
 
+unsigned long SIM800LManager::m_lastRecoveryAttemptMs = 0;
+unsigned long SIM800LManager::m_baudRateForRecovery = SIM800_BAUD_RATE;
+int8_t SIM800LManager::m_rxPinForRecovery = SIM800_RX_PIN;
+int8_t SIM800LManager::m_txPinForRecovery = SIM800_TX_PIN;
+
 // ---------------------------------------------------------------------------
 // Local helpers (no need to be in the header)
 // ---------------------------------------------------------------------------
@@ -118,6 +123,10 @@ void SIM800LManager::begin(unsigned long baudRate, int8_t rxPin, int8_t txPin, i
 
     DebugSerial::println("[SIM800L] Initializing hardware on RX=" + String(rxPin) +
                          " TX=" + String(txPin) + " Baud=" + String(baudRate));
+
+    m_baudRateForRecovery = baudRate;
+    m_rxPinForRecovery = rxPin;
+    m_txPinForRecovery = txPin;
 
     m_rstPin = rstPin;
     if (m_rstPin >= 0) {
@@ -373,10 +382,14 @@ bool SIM800LManager::isSendInProgress() {
 }
 
 // Runs on its own FreeRTOS task. All of this is blocking (AT commands with
-// multi-second timeouts, up to 20s just for AT+HTTPACTION), which is exactly
+// multi-second timeouts, up to 90s just for AT+HTTPACTION), which is exactly
 // why it must NOT run inline from the CallbackManager/loop()-driven timer
 // callback: doing so used to freeze the entire firmware (BLE, display, OBD
 // polling, everything) for the whole duration of the HTTP transaction.
+//
+// Network diagnostics are triggered inside connectGPRS()/sendHttpPost() only
+// for network-level failures. A server-side error (HTTP 4xx/5xx) is not a
+// network problem, so it must not trigger them.
 void SIM800LManager::sendTaskTrampoline(void* param) {
     {
         String url = m_sendTaskUrl;
@@ -394,8 +407,7 @@ void SIM800LManager::sendTaskTrampoline(void* param) {
         if (ok && responseBody.length() > 0) {
             applyServerResponse(responseBody);
         } else if (!ok) {
-            DebugSerial::println("[SIM800L] Non-volatile POST transmission failed. Running network diagnostics...");
-            logNetworkDiagnostics();
+            DebugSerial::println("[SIM800L] Non-volatile POST transmission failed.");
         }
     }
 
@@ -448,7 +460,7 @@ void SIM800LManager::applyServerResponse(const String& body) {
     float gasoline = doc["gasolineLevel"] | d.getGasolineLevel();
     float tank     = doc["tankCapacity"] | d.getTankCapacity();
     float factor   = doc["fuelConsumptionFactor"] | d.getFuelConsumptionFactor();
-    float dist     = doc["totalDistance"] | d.getTotalDistance();
+    double dist    = doc["totalDistance"] | d.getTotalDistance();
     float trip     = doc["tripConsumption"] | d.getTripConsumption();
     int   version  = doc["sync_version"];
 
@@ -467,7 +479,7 @@ void SIM800LManager::applyServerResponse(const String& body) {
         differs(gasoline, d.getGasolineLevel(), 0.01f) ||
         differs(tank, d.getTankCapacity(), 0.01f) ||
         differs(factor, d.getFuelConsumptionFactor(), 0.000001f) ||
-        differs(dist, d.getTotalDistance(), 0.01f) ||
+        differs((float)dist, (float)d.getTotalDistance(), 0.01f) ||
         differs(trip, d.getTripConsumption(), 0.01f) ||
         version != d.getSyncVersion();
 
@@ -572,8 +584,12 @@ bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, 
         return false;
     }
 
-    // 9. Execute HTTP POST action (Method 1) with generous timeout (35s) for 2G networks
-    resp = sendATCommand("AT+HTTPACTION=1", 35000, "+HTTPACTION:");
+    // 9. Execute HTTP POST action (Method 1).
+    // The module answers "OK" immediately and the real result arrives later as
+    // "+HTTPACTION: 1,<code>,<len>". On weak 2G / roaming it can take 60s or
+    // more, so wait generously (this runs in the background task, so blocking
+    // here does not freeze loop()).
+    resp = sendATCommand("AT+HTTPACTION=1", 90000, "+HTTPACTION:");
     int httpCode = 0;
     int actionIdx = resp.indexOf("+HTTPACTION:");
     if (actionIdx != -1) {
@@ -584,6 +600,8 @@ bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, 
             codeStr.trim();
             httpCode = codeStr.toInt();
         }
+    } else {
+        DebugSerial::println("[SIM800L] WARNING: No +HTTPACTION result received (request still pending).");
     }
 
     DebugSerial::println("[SIM800L] HTTP POST Result Code: " + String(httpCode));
@@ -602,18 +620,29 @@ bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, 
         }
     }
 
-    // 11. Terminate HTTP session cleanly
-    sendATCommand("AT+HTTPTERM", 2000, "OK");
-
-    // 6xx codes are SIM800L network errors: force GPRS reconnection next time
-    if (httpCode >= 600 || httpCode == 0) {
-        setStatus(ESIMSTATUS::DISCONNECTED);
+    // 11. Terminate HTTP session cleanly.
+    // "+CME ERROR: operation not allowed" means the action is still pending:
+    // wait a bit and try once more.
+    String termResp = sendATCommand("AT+HTTPTERM", 2000, "OK");
+    if (termResp.indexOf("OK") == -1) {
+        delay(3000);
+        sendATCommand("AT+HTTPTERM", 2000, "OK");
     }
 
     if (success) {
         DebugSerial::println("[SIM800L] HTTP POST successfully completed!");
     } else {
         DebugSerial::println("[SIM800L] ERROR: HTTP POST failed with HTTP status: " + String(httpCode));
+    }
+
+    // 0 (no result) and 6xx codes are SIM800L network errors. Drop the bearer so
+    // the next attempt reopens it from scratch (otherwise connectGPRS() would
+    // find a stale "already active" bearer), and run the network diagnostics.
+    // 4xx/5xx are server-side errors and do not need network diagnostics.
+    if (httpCode == 0 || httpCode >= 600) {
+        sendATCommand("AT+SAPBR=0,1", 10000, "OK");
+        setStatus(ESIMSTATUS::DISCONNECTED);
+        logNetworkDiagnostics();
     }
 
     return success;
@@ -718,6 +747,15 @@ void SIM800LManager::sendCommand(const String& command) {
 }
 
 void SIM800LManager::update() {
+    // Hardware not responding or SIM reported missing are otherwise permanent
+    // barriers (both are only ever cleared from begin()/checkSimStatus()).
+    // Give them a throttled chance to self-heal in the background: a modem
+    // that comes back up, or a SIM that gets inserted/activated later, can
+    // then resume telemetry without requiring a device restart.
+    if (!m_hardwareAvailable || m_status == ESIMSTATUS::WITHOUT_SIM) {
+        tryRecover();
+    }
+
     readIncoming();
 
     // Process pending command from queue if available
@@ -733,6 +771,73 @@ void SIM800LManager::update() {
             DebugSerial::println("[SIM800L] Timeout waiting for command: " + m_lastCommandSent);
             m_messageReceived = true;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Background recovery for hardware-unavailable / WITHOUT_SIM states
+// ---------------------------------------------------------------------------
+void SIM800LManager::tryRecover() {
+    // Throttle: these probes involve several AT round-trips (up to ~1s each
+    // with retries), so they must not run on every update() tick
+    // (SIM800_UPDATE_INTERVAL_MS is only 100ms) or they'd starve the command
+    // queue/serial line and spam the module.
+    const unsigned long kRecoveryCooldownMs = 30UL * 1000UL;
+
+    unsigned long now = millis();
+    if (m_lastRecoveryAttemptMs != 0 && (now - m_lastRecoveryAttemptMs < kRecoveryCooldownMs)) {
+        return;
+    }
+    m_lastRecoveryAttemptMs = now;
+
+    // Don't fight the background send task for the serial line.
+    if (m_serialMutex != nullptr) {
+        if (xSemaphoreTake(m_serialMutex, 0) != pdTRUE) {
+            // Remains scheduled: next call (after cooldown) will retry.
+            m_lastRecoveryAttemptMs = 0;
+            return;
+        }
+    }
+
+    if (!m_hardwareAvailable) {
+        DebugSerial::println("[SIM800L][RECOVERY] Hardware unavailable, reprobing module responsiveness...");
+
+        // Flush any garbage accumulated while "unavailable".
+        while (m_serial->available()) {
+            m_serial->read();
+        }
+
+        bool responded = false;
+        for (int i = 0; i < 3; i++) {
+            String resp = sendATCommand("AT", 1000, "OK");
+            if (resp.indexOf("OK") != -1) {
+                responded = true;
+                break;
+            }
+            delay(300);
+        }
+
+        if (responded) {
+            DebugSerial::println("[SIM800L][RECOVERY] Module responded again. Repeating initialization sequence...");
+            m_hardwareAvailable = true;
+            sendATCommand("ATE0", 1000, "OK");
+            sendATCommand("AT+CMEE=2", 1000, "OK");
+            sendATCommand("AT+IPR=" + String(m_baudRateForRecovery), 1000, "OK");
+            ensureAllBand();
+            setStatus(ESIMSTATUS::DISCONNECTED);
+            checkSimStatus();
+        } else {
+            DebugSerial::println("[SIM800L][RECOVERY] Module still not responding. Will retry later.");
+        }
+    } else if (m_status == ESIMSTATUS::WITHOUT_SIM) {
+        DebugSerial::println("[SIM800L][RECOVERY] Re-checking SIM presence (AT+CPIN?)...");
+        // checkSimStatus() itself clears WITHOUT_SIM -> DISCONNECTED when the
+        // SIM reports ready; nothing further to do here either way.
+        checkSimStatus();
+    }
+
+    if (m_serialMutex != nullptr) {
+        xSemaphoreGive(m_serialMutex);
     }
 }
 
@@ -798,15 +903,21 @@ void SIM800LManager::setRawMessageCallback(RawMessageCallback callback) {
     m_rawMessageCallback = callback;
 }
 
+// ---------------------------------------------------------------------------
+// Network diagnostics
+// ---------------------------------------------------------------------------
 void SIM800LManager::logNetworkDiagnostics(bool force) {
     static unsigned long s_lastDiagTime = 0;
-    const unsigned long kDiagCooldownMs = 60000;
+    static bool s_hasRun = false;
+    // The diagnostics can take minutes (AT+COPS=? alone allows up to 2 min), so
+    // the cooldown is counted from the END of the previous run, otherwise a
+    // second failure right after would re-trigger it immediately.
+    const unsigned long kDiagCooldownMs = 5UL * 60UL * 1000UL;
 
-    if (!force && s_lastDiagTime > 0 && (millis() - s_lastDiagTime < kDiagCooldownMs)) {
-        DebugSerial::println("[SIM800L][DIAG] Diagnostics throttled (ran less than 60s ago). Skipping.");
+    if (!force && s_hasRun && (millis() - s_lastDiagTime < kDiagCooldownMs)) {
+        DebugSerial::println("[SIM800L][DIAG] Diagnostics throttled (ran less than 5 min ago). Skipping.");
         return;
     }
-    s_lastDiagTime = millis();
 
     DebugSerial::println("[SIM800L][DIAG] ---- Network diagnostics ----");
 
@@ -820,6 +931,8 @@ void SIM800LManager::logNetworkDiagnostics(bool force) {
         DebugSerial::println("[SIM800L][DIAG] Causa provavel: Modulo sem alimentacao/desligado (corte de sobretensao), fios TX/RX desconectados ou falta de GND comum.");
         DebugSerial::println("[SIM800L][DIAG] Verifique: LED onboard do SIM800L (deve estar aceso/piscando), RX (pino 16), TX (pino 17) e alimentacao.");
         DebugSerial::println("[SIM800L][DIAG] ---- End diagnostics ----");
+        s_lastDiagTime = millis();
+        s_hasRun = true;
         return;
     }
 
@@ -847,12 +960,14 @@ void SIM800LManager::logNetworkDiagnostics(bool force) {
     }
 
     // 3. Network registration status (Circuit Switched - Voice/SMS/Cell Tower)
+    int cregStat = -1;
     String creg = sendATCommand("AT+CREG?", 2000, "OK");
     idx = creg.indexOf("+CREG:");
     if (idx != -1) {
         int comma = creg.indexOf(',', idx);
         if (comma != -1) {
             int stat = creg.substring(comma + 1).toInt();
+            cregStat = stat;
             String txt;
             switch (stat) {
                 case 0: txt = "nao registrado e nao esta procurando (problema no chip/operadora/banda)"; break;
@@ -927,8 +1042,18 @@ void SIM800LManager::logNetworkDiagnostics(bool force) {
     String ccid = sendATCommand("AT+CCID", 2000, "OK");    // SIM ICCID (confirms that the SIM is read)
     DebugSerial::println("[SIM800L][DIAG] SIM CCID: " + ccid);
 
-    cops = sendATCommand("AT+COPS=?", 120000, "OK"); // scans available operators (takes up to ~2 min)
-    DebugSerial::println("[SIM800L][DIAG] Available operators: " + cops);
+    // 7. Operator scan. Only useful when NOT registered: while the module is
+    // registered, AT+COPS=? briefly interrupts the current registration/data
+    // session, which would make the failure we are diagnosing even worse.
+    if (cregStat == 1 || cregStat == 5) {
+        DebugSerial::println("[SIM800L][DIAG] Module is registered: skipping operator scan (AT+COPS=?) to avoid dropping the connection.");
+    } else {
+        cops = sendATCommand("AT+COPS=?", 120000, "OK"); // scans available operators (takes up to ~2 min)
+        DebugSerial::println("[SIM800L][DIAG] Available operators: " + cops);
+    }
 
     DebugSerial::println("[SIM800L][DIAG] ---- End diagnostics ----");
+
+    s_lastDiagTime = millis();
+    s_hasRun = true;
 }

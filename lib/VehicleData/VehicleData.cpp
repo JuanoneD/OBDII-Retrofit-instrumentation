@@ -53,9 +53,9 @@ void VehicleData::loadPersistentData() {
         preferences.putFloat("factor", DEFAULT_FUEL_CONSUMPTION_FACTOR);
     }
 
-    totalDistance = preferences.getFloat("distance", DEFAULT_TOTAL_DISTANCE);
+    totalDistance = preferences.getDouble("distance", DEFAULT_TOTAL_DISTANCE);
     if (!preferences.isKey("distance")) {
-        preferences.putFloat("distance", DEFAULT_TOTAL_DISTANCE);
+        preferences.putDouble("distance", DEFAULT_TOTAL_DISTANCE);
     }
 
     tripConsumption = preferences.getFloat("tripFuel", DEFAULT_TRIP_CONSUMPTION);
@@ -220,13 +220,13 @@ void VehicleData::setFuelConsumptionFactor(float factor) {
     preferences.putFloat("factor", fuelConsumptionFactor);
 }
 
-float VehicleData::getTotalDistance() const {
+double VehicleData::getTotalDistance() const {
     return totalDistance;
 }
 
-void VehicleData::setTotalDistance(float distance) {
+void VehicleData::setTotalDistance(double distance) {
     totalDistance = distance;
-    preferences.putFloat("distance", totalDistance);
+    preferences.putDouble("distance", totalDistance);
 }
 
 float VehicleData::getTripConsumption() const {

@@ -61,8 +61,8 @@ public:
     float getFuelConsumptionFactor() const;
     void setFuelConsumptionFactor(float factor);
 
-    float getTotalDistance() const;
-    void setTotalDistance(float distance);
+    double getTotalDistance() const;
+    void setTotalDistance(double distance);
 
     float getTripConsumption() const;
     void setTripConsumption(float consumption);
@@ -100,15 +100,17 @@ private:
     float gasolineLevel;
     float tankCapacity;
     float fuelConsumptionFactor;
-    float totalDistance;
+    double totalDistance;   // double precision to avoid losing sub-meter
+                             // increments once mileage reaches typical
+                             // lifetime values (e.g. 100,000+ km) with float.
     float tripConsumption;
     int syncVersion;
 
     // Default constants for persistence
     static constexpr float DEFAULT_GASOLINE_LEVEL = 45.0f;
     static constexpr float DEFAULT_TANK_CAPACITY = 45.0f;
-    static constexpr float DEFAULT_FUEL_CONSUMPTION_FACTOR = 0.000000008f;
-    static constexpr float DEFAULT_TOTAL_DISTANCE = 0.0f;
+    static constexpr float DEFAULT_FUEL_CONSUMPTION_FACTOR = 0.0000000078;
+    static constexpr double DEFAULT_TOTAL_DISTANCE = 0.0;
     static constexpr float DEFAULT_TRIP_CONSUMPTION = 0.0f;
     static constexpr int DEFAULT_SYNC_VERSION = 0;
 };
