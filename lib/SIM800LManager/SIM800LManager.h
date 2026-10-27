@@ -10,6 +10,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
+#include <TinyGsmClient.h>
+#include <SSLClient.h>
 #include "config.h"
 #include "CallbackManager.h"
 #include "DebugSerial.h"
@@ -136,6 +138,30 @@ private:
     static bool m_hardwareAvailable;
     static bool m_callbackInit;
     static RawMessageCallback m_rawMessageCallback;
+
+    // Actual connectGPRS() body, run while already holding m_serialMutex for
+    // its entire duration (see connectGPRS() in the .cpp for why).
+    static bool connectGPRSLocked();
+
+    // Actual sendHttpPost() body, run while already holding m_serialMutex for
+    // its entire duration (see sendHttpPost() in the .cpp for why).
+    static bool sendHttpPostLocked(const String& url, const String& jsonPayload, String* responseBody);
+
+    // TinyGSM talks to the SIM800L purely as a "dumb modem" (AT+CIPSTART /
+    // AT+CIPSEND raw TCP socket), and SSLClient performs the actual TLS
+    // 1.2/1.3 handshake + encryption on the ESP32 itself (via its mbedTLS /
+    // BearSSL-equivalent stack), since the SIM800L's own built-in SSL engine
+    // only supports SSLv3/TLS1.0 and fails modern handshakes (HTTPACTION 606).
+    static TinyGsm* m_modem;
+    static TinyGsmClient* m_gsmClient;
+    static SSLClient* m_sslClient;
+    static bool ensureModemClientsInitialized();
+
+    // Minimal hand-rolled HTTP/1.1 client over an Arduino Client (TCP or TLS).
+    // Returns true on 2xx status; fills statusCode/responseBody when provided.
+    static bool httpPostOverClient(Client& client, const String& url,
+                                   const String& jsonPayload, String* responseBody,
+                                   int* statusCode);
 
     // Command queue & execution state
     static std::queue<String> m_commandQueue;

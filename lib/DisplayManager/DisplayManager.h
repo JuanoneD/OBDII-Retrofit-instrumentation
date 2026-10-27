@@ -71,6 +71,7 @@ private:
     String m_cacheTemp;
     String m_cacheLoad;
     String m_cacheLtft;
+    String m_cacheCellStatus;
     int    m_cacheRpmBarBlocks;
 
     bool probeI2C(uint8_t addr);
@@ -79,6 +80,7 @@ private:
     void renderStatusWaitEcu();
     void renderDashboard();
     void renderRpmBar(int rpm);
+    void renderCellularStatusLine();
 
     static String formatRpm(int rpm);
     static String formatGas(float gasPct);

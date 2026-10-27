@@ -15,6 +15,10 @@ bool SIM800LManager::m_hardwareAvailable = false;
 bool SIM800LManager::m_callbackInit = false;
 RawMessageCallback SIM800LManager::m_rawMessageCallback = nullptr;
 
+TinyGsm* SIM800LManager::m_modem = nullptr;
+TinyGsmClient* SIM800LManager::m_gsmClient = nullptr;
+SSLClient* SIM800LManager::m_sslClient = nullptr;
+
 std::queue<String> SIM800LManager::m_commandQueue;
 String SIM800LManager::m_lastCommandSent = "";
 String SIM800LManager::m_lastResponse = "";
@@ -96,6 +100,54 @@ static String readSerialResponse(HardwareSerial* serial, unsigned long timeoutMs
 }
 
 // ---------------------------------------------------------------------------
+// TinyGSM / SSLClient lazy initialization
+// ---------------------------------------------------------------------------
+// Created lazily (after m_serial->begin() in begin()) because TinyGsm's
+// constructor just stores the Stream& reference, but we want the serial
+// port already configured at the right baud rate first.
+bool SIM800LManager::ensureModemClientsInitialized() {
+    if (m_modem != nullptr && m_gsmClient != nullptr && m_sslClient != nullptr) {
+        return true;
+    }
+    if (m_serial == nullptr) return false;
+
+    if (m_modem == nullptr) {
+        m_modem = new TinyGsm(*m_serial);
+    }
+    if (m_gsmClient == nullptr) {
+        m_gsmClient = new TinyGsmClient(*m_modem);
+    }
+    if (m_sslClient == nullptr) {
+        // SSLClient wraps the raw TinyGsmClient (TCP socket over the SIM800L)
+        // and performs the TLS 1.2/1.3 handshake itself using the ESP32's CPU,
+        // instead of relying on the SIM800L's own obsolete SSLv3/TLS1.0-only
+        // engine (which is the root cause of the HTTPACTION 606 errors with
+        // modern TLS-only backends like Tailscale Funnel).
+        m_sslClient = new SSLClient(m_gsmClient);
+
+        // We don't ship/pin a CA bundle for the backend's cert chain (e.g.
+        // Let's Encrypt via Tailscale Funnel), so skip certificate validation
+        // entirely rather than failing/hanging trying to validate against an
+        // empty trust store. This only disables chain-of-trust verification;
+        // the traffic is still fully encrypted via a real TLS 1.2/1.3
+        // handshake, which is the actual problem we're solving here (the
+        // SIM800L's own SSLv3/TLS1.0 engine couldn't complete the handshake
+        // at all against the backend).
+        m_sslClient->setInsecure();
+
+        // A full TLS 1.2/1.3 handshake over 2G/GPRS (weak signal, roaming,
+        // multiple round-trips for ClientHello/ServerHello/certificates/Finished)
+        // routinely takes well past the library's default handshake timeout.
+        // Give it generous headroom; this already runs inside the background
+        // send task, so a long block here does not freeze loop().
+        m_sslClient->setHandshakeTimeout(60000);
+    }
+
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Constructor / Destructor
 // ---------------------------------------------------------------------------
 SIM800LManager::SIM800LManager() {}
@@ -118,7 +170,13 @@ String SIM800LManager::getDeviceId() {
 // ---------------------------------------------------------------------------
 void SIM800LManager::begin(unsigned long baudRate, int8_t rxPin, int8_t txPin, int8_t rstPin) {
     if (m_serialMutex == nullptr) {
-        m_serialMutex = xSemaphoreCreateMutex();
+        // Recursive: sendATCommand()/sendRawData() already take this mutex
+        // internally, and they are now also called from within long
+        // operations (connectGPRS(), the HTTP/TLS POST) that need to hold
+        // the lock for their entire duration (see comments in connectGPRS()/
+        // sendHttpPost()). A plain mutex would deadlock the owning task on
+        // the inner sendATCommand() call in that scenario.
+        m_serialMutex = xSemaphoreCreateRecursiveMutex();
     }
 
     DebugSerial::println("[SIM800L] Initializing hardware on RX=" + String(rxPin) +
@@ -272,14 +330,50 @@ bool SIM800LManager::ensureAllBand() {
 // ---------------------------------------------------------------------------
 // GPRS
 // ---------------------------------------------------------------------------
+// GPRS bring-up is now delegated to TinyGsm::gprsConnect(), which internally
+// issues the equivalent AT+CGATT/AT+SAPBR-style sequence for SIM800 modems.
+// We keep our own AT+CPIN?/AT+CREG? pre-checks (and logNetworkDiagnostics())
+// since TinyGsm doesn't expose the same level of diagnostic detail we rely on.
+//
+// IMPORTANT: unlike sendATCommand()/sendRawData() (which each grab the serial
+// mutex only for their own single AT round-trip), everything TinyGsm does
+// here (isGprsConnected(), gprsConnect()) talks to m_serial directly, NOT
+// through sendATCommand(). If readIncoming() (called every
+// SIM800_UPDATE_INTERVAL_MS from the loop()-context timer) or tryRecover()
+// sneak in and steal/interleave bytes while TinyGsm is mid-exchange with the
+// module, the response gets corrupted - this silently broke the OK/ERROR
+// framing TinyGsm expects and could cascade into garbage bytes reaching the
+// later TLS handshake, which is what caused the "invalid SSL record" /
+// handshake timeout errors. So the WHOLE function holds the (recursive)
+// serial mutex for its entire duration, not just per-command.
 bool SIM800LManager::connectGPRS() {
+    if (m_serialMutex != nullptr) {
+        xSemaphoreTakeRecursive(m_serialMutex, portMAX_DELAY);
+    }
+
+    bool result = connectGPRSLocked();
+
+    if (m_serialMutex != nullptr) {
+        xSemaphoreGiveRecursive(m_serialMutex);
+    }
+
+    return result;
+}
+
+bool SIM800LManager::connectGPRSLocked() {
     if (!m_hardwareAvailable) {
         DebugSerial::println("[SIM800L] Cannot connect GPRS: Module hardware not responding.");
         return false;
+
     }
 
     if (m_status == ESIMSTATUS::WITHOUT_SIM) {
         DebugSerial::println("[SIM800L] Cannot connect GPRS: WITHOUT_SIM state.");
+        return false;
+    }
+
+    if (!ensureModemClientsInitialized()) {
+        DebugSerial::println("[SIM800L] ERROR: Could not initialize TinyGsm modem/client.");
         return false;
     }
 
@@ -309,53 +403,36 @@ bool SIM800LManager::connectGPRS() {
         return false;
     }
 
-    // 3. Attach GPRS
-    sendATCommand("AT+CGATT=1", 5000, "OK");
-
-    // 4. Check if Bearer 1 is already open
-    String sapbrQuery = sendATCommand("AT+SAPBR=2,1", 3000, "OK");
-    if (sapbrQuery.indexOf("+SAPBR: 1,1") != -1) {
-        DebugSerial::println("[SIM800L] GPRS Bearer profile 1 already active.");
+    // Already attached? Nothing more to do.
+    if (m_modem->isGprsConnected()) {
+        DebugSerial::println("[SIM800L] GPRS already connected.");
         setStatus(ESIMSTATUS::CONNECTED);
         return true;
     }
 
-    // 5. Configure Bearer Profile (SAPBR)
-    sendATCommand("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"", 2000, "OK");
+    // 3. Attach GPRS via TinyGsm (APN/user/pass taken from config.h, same as before)
+    const char* apnUser = (strlen(SIM800_APN_USER) > 0) ? SIM800_APN_USER : nullptr;
+    const char* apnPass = (strlen(SIM800_APN_PASS) > 0) ? SIM800_APN_PASS : nullptr;
 
-    String apnCmd = "AT+SAPBR=3,1,\"APN\",\"" + String(SIM800_APN) + "\"";
-    sendATCommand(apnCmd, 2000, "OK");
-
-    if (strlen(SIM800_APN_USER) > 0) {
-        String userCmd = "AT+SAPBR=3,1,\"USER\",\"" + String(SIM800_APN_USER) + "\"";
-        sendATCommand(userCmd, 2000, "OK");
-    }
-
-    if (strlen(SIM800_APN_PASS) > 0) {
-        String passCmd = "AT+SAPBR=3,1,\"PWD\",\"" + String(SIM800_APN_PASS) + "\"";
-        sendATCommand(passCmd, 2000, "OK");
-    }
-
-    // 6. Open Bearer
-    sendATCommand("AT+SAPBR=1,1", 10000, "OK");
-
-    // 7. Verify allocated IP address
-    sapbrQuery = sendATCommand("AT+SAPBR=2,1", 3000, "OK");
-    if (sapbrQuery.indexOf("+SAPBR: 1,1") != -1) {
-        DebugSerial::println("[SIM800L] GPRS Bearer connected successfully!");
-        setStatus(ESIMSTATUS::CONNECTED);
-        return true;
-    } else {
+    if (!m_modem->gprsConnect(SIM800_APN, apnUser, apnPass)) {
         DebugSerial::println("[SIM800L] ERROR: GPRS Bearer failed to connect. Running network diagnostics...");
         setStatus(ESIMSTATUS::DISCONNECTED);
         logNetworkDiagnostics();
         return false;
     }
+
+    DebugSerial::println("[SIM800L] GPRS Bearer connected successfully! IP: " + m_modem->getLocalIP());
+    setStatus(ESIMSTATUS::CONNECTED);
+    return true;
 }
 
 bool SIM800LManager::disconnectGPRS() {
     DebugSerial::println("[SIM800L] Disconnecting GPRS bearer...");
-    sendATCommand("AT+SAPBR=0,1", 3000, "OK");
+    if (m_modem != nullptr) {
+        m_modem->gprsDisconnect();
+    } else {
+        sendATCommand("AT+SAPBR=0,1", 3000, "OK");
+    }
     setStatus(ESIMSTATUS::DISCONNECTED);
     return true;
 }
@@ -424,13 +501,21 @@ bool SIM800LManager::sendNonVolatileData(const String& baseUrl) {
     m_sendTaskUrl = baseUrl;
     m_sendInProgress = true;
 
-    BaseType_t result = xTaskCreate(
+    // Pinned to core 1 (same as Arduino's loopTask): the TLS handshake
+    // (mbedTLS, via SSLClient) is CPU-heavy and was previously starving
+    // IDLE0 on core 0 long enough to trip the task watchdog and reboot the
+    // device ("IDLE0 (CPU 0) did not reset the watchdog in time"). Pinning
+    // this task to core 1 keeps core 0's idle task free to feed its own
+    // watchdog. Stack bumped to 16KB: mbedTLS's handshake/record buffers
+    // need considerably more than plain AT-command string handling did.
+    BaseType_t result = xTaskCreatePinnedToCore(
         sendTaskTrampoline,
         "sim800SendTask",
-        8192,      // stack size: builds URL/JSON Strings, AT responses, etc.
+        16384,     // stack size: TLS handshake (mbedTLS) + URL/JSON Strings, AT responses, etc.
         nullptr,
         1,         // low-ish priority, don't starve BLE/other critical tasks
-        nullptr
+        nullptr,
+        1          // core 1 (alongside loopTask), keep core 0's IDLE task free
     );
 
     if (result != pdPASS) {
@@ -478,7 +563,7 @@ void SIM800LManager::applyServerResponse(const String& body) {
     bool changed =
         differs(gasoline, d.getGasolineLevel(), 0.01f) ||
         differs(tank, d.getTankCapacity(), 0.01f) ||
-        differs(factor, d.getFuelConsumptionFactor(), 0.000001f) ||
+        differs(factor, d.getFuelConsumptionFactor(), 0.0000000078) ||
         differs((float)dist, (float)d.getTotalDistance(), 0.01f) ||
         differs(trip, d.getTripConsumption(), 0.01f) ||
         version != d.getSyncVersion();
@@ -508,145 +593,202 @@ bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, 
         return false;
     }
 
+    // Holds the serial mutex for the WHOLE operation (GPRS bring-up +
+    // TCP/TLS connect + HTTP request/response), not just per-AT-command:
+    // TinyGsmClient/SSLClient talk to m_serial directly (not through
+    // sendATCommand()), so without this, readIncoming()/tryRecover() running
+    // from the loop()-context timer could interleave/steal bytes mid-handshake,
+    // corrupting the TLS stream (this was the root cause of the "invalid SSL
+    // record" / handshake timeout errors).
+    if (m_serialMutex != nullptr) {
+        xSemaphoreTakeRecursive(m_serialMutex, portMAX_DELAY);
+    }
+
+    bool result = sendHttpPostLocked(url, jsonPayload, responseBody);
+
+    if (m_serialMutex != nullptr) {
+        xSemaphoreGiveRecursive(m_serialMutex);
+    }
+
+    return result;
+}
+
+bool SIM800LManager::sendHttpPostLocked(const String& url, const String& jsonPayload, String* responseBody) {
     if (m_status != ESIMSTATUS::CONNECTED) {
         DebugSerial::println("[SIM800L] eSIM disconnected. Establishing GPRS first...");
-        if (!connectGPRS()) {
+        if (!connectGPRSLocked()) {
             DebugSerial::println("[SIM800L] ERROR: GPRS connection could not be established.");
             return false;
         }
     }
 
+    if (!ensureModemClientsInitialized()) {
+        DebugSerial::println("[SIM800L] ERROR: Could not initialize TinyGsm modem/client.");
+        return false;
+    }
+
     DebugSerial::println("[SIM800L] Sending HTTP POST to: " + url);
     DebugSerial::println("[SIM800L] Payload: " + jsonPayload);
 
-    // 1. Terminate any dangling HTTP session
-    sendATCommand("AT+HTTPTERM", 1000, "OK");
+    bool isHttps = url.startsWith("https://");
 
-    // 2. Initialize HTTP service
-    String resp = sendATCommand("AT+HTTPINIT", 3000, "OK");
-    if (resp.indexOf("OK") == -1) {
-        // If already initialized or pending, terminate and retry
-        sendATCommand("AT+HTTPTERM", 2000, "OK");
-        delay(500);
-        resp = sendATCommand("AT+HTTPINIT", 3000, "OK");
-        if (resp.indexOf("OK") == -1) {
-            DebugSerial::println("[SIM800L] ERROR: AT+HTTPINIT failed.");
-            return false;
-        }
-    }
+    // The SIM800L is used here only as a "dumb modem": TinyGsmClient opens a
+    // raw TCP socket over it (AT+CIPSTART/AT+CIPSEND/AT+CIPCLOSE under the
+    // hood). For HTTPS, SSLClient wraps that TCP socket and performs the
+    // actual TLS 1.2/1.3 handshake + encryption using the ESP32's own CPU
+    // (mbedTLS), completely bypassing the SIM800L's obsolete SSLv3/TLS1.0-only
+    // engine that was causing HTTPACTION 606 against modern TLS-only
+    // backends (e.g. Tailscale Funnel).
+    int statusCode = 0;
+    bool success = false;
 
-    // 3. Set Bearer profile identifier (CID = 1)
-    resp = sendATCommand("AT+HTTPPARA=\"CID\",1", 2000, "OK");
-    if (resp.indexOf("OK") == -1) {
-        DebugSerial::println("[SIM800L] ERROR: AT+HTTPPARA CID failed.");
-        sendATCommand("AT+HTTPTERM", 1000, "OK");
-        return false;
-    }
-
-    // 4. Set Destination URL
-    String urlCmd = "AT+HTTPPARA=\"URL\",\"" + url + "\"";
-    resp = sendATCommand(urlCmd, 3000, "OK");
-    if (resp.indexOf("OK") == -1) {
-        DebugSerial::println("[SIM800L] ERROR: AT+HTTPPARA URL failed.");
-        sendATCommand("AT+HTTPTERM", 1000, "OK");
-        return false;
-    }
-
-    // 5. Set Content-Type Header
-    resp = sendATCommand("AT+HTTPPARA=\"CONTENT\",\"application/json\"", 2000, "OK");
-    if (resp.indexOf("OK") == -1) {
-        DebugSerial::println("[SIM800L] ERROR: AT+HTTPPARA CONTENT failed.");
-        sendATCommand("AT+HTTPTERM", 1000, "OK");
-        return false;
-    }
-
-    // 6. Handle SSL if URL is HTTPS
-    if (url.startsWith("https://")) {
-        sendATCommand("AT+HTTPSSL=1", 2000, "OK");
+    if (isHttps) {
+        success = httpPostOverClient(*m_sslClient, url, jsonPayload, responseBody, &statusCode);
     } else {
-        sendATCommand("AT+HTTPSSL=0", 2000, "OK");
+        success = httpPostOverClient(*m_gsmClient, url, jsonPayload, responseBody, &statusCode);
     }
 
-    // 7. Request HTTPDATA transmission
-    String dataCmd = "AT+HTTPDATA=" + String(jsonPayload.length()) + ",10000";
-    resp = sendATCommand(dataCmd, 5000, "DOWNLOAD");
-    if (resp.indexOf("DOWNLOAD") == -1) {
-        DebugSerial::println("[SIM800L] ERROR: DOWNLOAD prompt not received.");
-        sendATCommand("AT+HTTPTERM", 1000, "OK");
-        return false;
-    }
-
-    // 8. Stream JSON payload bytes and wait for "OK" upload confirmation
-    resp = sendRawData(jsonPayload, 5000, "OK");
-    if (resp.indexOf("OK") == -1) {
-        DebugSerial::println("[SIM800L] ERROR: Failed streaming JSON payload.");
-        sendATCommand("AT+HTTPTERM", 1000, "OK");
-        return false;
-    }
-
-    // 9. Execute HTTP POST action (Method 1).
-    // The module answers "OK" immediately and the real result arrives later as
-    // "+HTTPACTION: 1,<code>,<len>". On weak 2G / roaming it can take 60s or
-    // more, so wait generously (this runs in the background task, so blocking
-    // here does not freeze loop()).
-    resp = sendATCommand("AT+HTTPACTION=1", 90000, "+HTTPACTION:");
-    int httpCode = 0;
-    int actionIdx = resp.indexOf("+HTTPACTION:");
-    if (actionIdx != -1) {
-        int firstComma = resp.indexOf(',', actionIdx);
-        int secondComma = resp.indexOf(',', firstComma + 1);
-        if (firstComma != -1 && secondComma != -1) {
-            String codeStr = resp.substring(firstComma + 1, secondComma);
-            codeStr.trim();
-            httpCode = codeStr.toInt();
-        }
-    } else {
-        DebugSerial::println("[SIM800L] WARNING: No +HTTPACTION result received (request still pending).");
-    }
-
-    DebugSerial::println("[SIM800L] HTTP POST Result Code: " + String(httpCode));
-
-    bool success = (httpCode >= 200 && httpCode < 300);
-
-    // 10. Read response body BEFORE HTTPTERM
-    if (success && responseBody != nullptr) {
-        String r = sendATCommand("AT+HTTPREAD", 5000, "+HTTPREAD:");
-        int s = r.indexOf('{');
-        int e = r.lastIndexOf('}');
-        if (s != -1 && e > s) {
-            *responseBody = r.substring(s, e + 1);
-        } else {
-            DebugSerial::println("[SIM800L] WARNING: No JSON body found in HTTP response.");
-        }
-    }
-
-    // 11. Terminate HTTP session cleanly.
-    // "+CME ERROR: operation not allowed" means the action is still pending:
-    // wait a bit and try once more.
-    String termResp = sendATCommand("AT+HTTPTERM", 2000, "OK");
-    if (termResp.indexOf("OK") == -1) {
-        delay(3000);
-        sendATCommand("AT+HTTPTERM", 2000, "OK");
-    }
+    DebugSerial::println("[SIM800L] HTTP POST Result Code: " + String(statusCode));
 
     if (success) {
         DebugSerial::println("[SIM800L] HTTP POST successfully completed!");
     } else {
-        DebugSerial::println("[SIM800L] ERROR: HTTP POST failed with HTTP status: " + String(httpCode));
+        DebugSerial::println("[SIM800L] ERROR: HTTP POST failed with HTTP status: " + String(statusCode));
     }
 
-    // 0 (no result) and 6xx codes are SIM800L network errors. Drop the bearer so
-    // the next attempt reopens it from scratch (otherwise connectGPRS() would
-    // find a stale "already active" bearer), and run the network diagnostics.
-    // 4xx/5xx are server-side errors and do not need network diagnostics.
-    if (httpCode == 0 || httpCode >= 600) {
-        sendATCommand("AT+SAPBR=0,1", 10000, "OK");
-        setStatus(ESIMSTATUS::DISCONNECTED);
+    // statusCode == 0 means we couldn't even connect/get a response (DNS,
+    // TCP connect, or TLS handshake failure) - that's a network-level problem,
+    // so drop GPRS and run diagnostics, same policy as before. A proper
+    // 4xx/5xx from the server is NOT a network problem.
+    if (statusCode == 0) {
+        disconnectGPRS();
         logNetworkDiagnostics();
     }
 
     return success;
 }
+
+// Minimal HTTP/1.1 POST implementation over any Arduino Client (works for
+// both the plain TinyGsmClient - HTTP - and the SSLClient-wrapped one -
+// HTTPS). Parses the connection host/path out of the URL, writes the request
+// line + headers + body manually, then reads the status line, headers
+// (looking for Content-Length), and body.
+bool SIM800LManager::httpPostOverClient(Client& client, const String& url,
+                                        const String& jsonPayload, String* responseBody,
+                                        int* statusCode) {
+    if (statusCode) *statusCode = 0;
+
+    // --- Parse URL into host/port/path ---
+    String rest = url;
+    bool https = false;
+    if (rest.startsWith("https://")) {
+        https = true;
+        rest.remove(0, 8);
+    } else if (rest.startsWith("http://")) {
+        rest.remove(0, 7);
+    }
+
+    int pathIdx = rest.indexOf('/');
+    String hostPort = (pathIdx == -1) ? rest : rest.substring(0, pathIdx);
+    String path = (pathIdx == -1) ? "/" : rest.substring(pathIdx);
+    if (path.length() == 0) path = "/";
+
+    String host = hostPort;
+    int port = https ? 443 : 80;
+    int colonIdx = hostPort.indexOf(':');
+    if (colonIdx != -1) {
+        host = hostPort.substring(0, colonIdx);
+        port = hostPort.substring(colonIdx + 1).toInt();
+    }
+
+    DebugSerial::println("[SIM800L] Connecting to " + host + ":" + String(port) +
+                         (https ? " (TLS)" : " (plain TCP)") + "...");
+
+    // Connection + TLS handshake (if any) happens inside connect().
+    if (!client.connect(host.c_str(), port)) {
+        DebugSerial::println("[SIM800L] ERROR: TCP/TLS connection to " + host + " failed.");
+        return false;
+    }
+
+    // --- Send request ---
+    client.print("POST " + path + " HTTP/1.1\r\n");
+    client.print("Host: " + host + "\r\n");
+    client.print("Content-Type: application/json\r\n");
+    client.print("Content-Length: " + String(jsonPayload.length()) + "\r\n");
+    client.print("Connection: close\r\n");
+    client.print("\r\n");
+    client.print(jsonPayload);
+
+    // --- Wait for response ---
+    unsigned long start = millis();
+    const unsigned long kResponseTimeoutMs = 30000;
+    while (!client.available() && client.connected() && (millis() - start < kResponseTimeoutMs)) {
+        delay(10);
+    }
+
+    if (!client.available()) {
+        DebugSerial::println("[SIM800L] ERROR: No response received before timeout.");
+        client.stop();
+        return false;
+    }
+
+    // Status line, e.g. "HTTP/1.1 200 OK"
+    String statusLine = client.readStringUntil('\n');
+    int code = 0;
+    int firstSpace = statusLine.indexOf(' ');
+    if (firstSpace != -1) {
+        code = statusLine.substring(firstSpace + 1, firstSpace + 4).toInt();
+    }
+    if (statusCode) *statusCode = code;
+
+    // Headers
+    long contentLength = -1;
+    while (client.connected() || client.available()) {
+        String line = client.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) break; // blank line = end of headers
+
+        String lower = line;
+        lower.toLowerCase();
+        if (lower.startsWith("content-length:")) {
+            contentLength = line.substring(line.indexOf(':') + 1).toInt();
+        }
+    }
+
+    // Body
+    String body;
+    if (contentLength >= 0) {
+        body.reserve(contentLength);
+        long remaining = contentLength;
+        unsigned long bodyStart = millis();
+        while (remaining > 0 && (millis() - bodyStart < kResponseTimeoutMs)) {
+            if (client.available()) {
+                body += (char)client.read();
+                remaining--;
+            } else {
+                delay(5);
+            }
+        }
+    } else {
+        // No Content-Length (or chunked, unsupported): just drain whatever
+        // arrives until the server closes the connection.
+        unsigned long bodyStart = millis();
+        while ((client.connected() || client.available()) && (millis() - bodyStart < kResponseTimeoutMs)) {
+            if (client.available()) {
+                body += (char)client.read();
+            } else {
+                delay(5);
+            }
+        }
+    }
+
+    client.stop();
+
+    if (responseBody) *responseBody = body;
+
+    return (code >= 200 && code < 300);
+}
+
 
 // ---------------------------------------------------------------------------
 // AT Communication (blocking)
@@ -658,8 +800,11 @@ String SIM800LManager::sendATCommand(const String& command, unsigned long timeou
     // checkSimStatus() during init, etc.) and from the background send task
     // (sendNonVolatileData() -> sendHttpPost() -> connectGPRS()/sendATCommand()).
     // Guard access to m_serial so the two never read/write it concurrently.
+    // Recursive mutex: the send task holds this same lock around the whole
+    // connectGPRS()/HTTP-TLS-POST operation (see sendHttpPost()), and calls
+    // back into sendATCommand() from within that span.
     if (m_serialMutex != nullptr) {
-        xSemaphoreTake(m_serialMutex, portMAX_DELAY);
+        xSemaphoreTakeRecursive(m_serialMutex, portMAX_DELAY);
     }
 
     while (m_serial->available()) {
@@ -673,7 +818,7 @@ String SIM800LManager::sendATCommand(const String& command, unsigned long timeou
     String response = readSerialResponse(m_serial, timeoutMs, expectedResponse);
 
     if (m_serialMutex != nullptr) {
-        xSemaphoreGive(m_serialMutex);
+        xSemaphoreGiveRecursive(m_serialMutex);
     }
 
     response.trim();
@@ -692,7 +837,7 @@ String SIM800LManager::sendRawData(const String& data, unsigned long timeoutMs, 
     if (m_serial == nullptr) return "";
 
     if (m_serialMutex != nullptr) {
-        xSemaphoreTake(m_serialMutex, portMAX_DELAY);
+        xSemaphoreTakeRecursive(m_serialMutex, portMAX_DELAY);
     }
 
     m_serial->print(data);
@@ -700,8 +845,9 @@ String SIM800LManager::sendRawData(const String& data, unsigned long timeoutMs, 
     String response = readSerialResponse(m_serial, timeoutMs, expectedResponse);
 
     if (m_serialMutex != nullptr) {
-        xSemaphoreGive(m_serialMutex);
+        xSemaphoreGiveRecursive(m_serialMutex);
     }
+
 
     response.trim();
     if (response.length() > 0) {
@@ -792,7 +938,7 @@ void SIM800LManager::tryRecover() {
 
     // Don't fight the background send task for the serial line.
     if (m_serialMutex != nullptr) {
-        if (xSemaphoreTake(m_serialMutex, 0) != pdTRUE) {
+        if (xSemaphoreTakeRecursive(m_serialMutex, 0) != pdTRUE) {
             // Remains scheduled: next call (after cooldown) will retry.
             m_lastRecoveryAttemptMs = 0;
             return;
@@ -837,7 +983,7 @@ void SIM800LManager::tryRecover() {
     }
 
     if (m_serialMutex != nullptr) {
-        xSemaphoreGive(m_serialMutex);
+        xSemaphoreGiveRecursive(m_serialMutex);
     }
 }
 
@@ -849,7 +995,7 @@ void SIM800LManager::readIncoming() {
     // mutex, just skip this cycle rather than blocking loop() waiting for
     // it - there will be another chance in SIM800_UPDATE_INTERVAL_MS.
     if (m_serialMutex != nullptr) {
-        if (xSemaphoreTake(m_serialMutex, 0) != pdTRUE) {
+        if (xSemaphoreTakeRecursive(m_serialMutex, 0) != pdTRUE) {
             return;
         }
     }
@@ -895,7 +1041,7 @@ void SIM800LManager::readIncoming() {
     }
 
     if (m_serialMutex != nullptr) {
-        xSemaphoreGive(m_serialMutex);
+        xSemaphoreGiveRecursive(m_serialMutex);
     }
 }
 

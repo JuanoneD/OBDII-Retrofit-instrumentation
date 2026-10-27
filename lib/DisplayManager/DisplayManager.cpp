@@ -1,6 +1,7 @@
 #include "DisplayManager.h"
 #include "VehicleData.h"
 #include "DebugSerial.h"
+#include "SIM800LManager.h"
 
 // Full-block character available on HD44780 character ROMs.
 static constexpr uint8_t LCD_BLOCK_CHAR = 0xFF;
@@ -64,6 +65,7 @@ void DisplayManager::invalidateCache() {
     m_cacheTemp         = "";
     m_cacheLoad         = "";
     m_cacheLtft         = "";
+    m_cacheCellStatus   = "";
     m_cacheRpmBarBlocks = -1;
 }
 
@@ -204,11 +206,43 @@ void DisplayManager::enterMode(DisplayMode mode) {
 void DisplayManager::renderStatusConnecting() {
     writeCenteredRow(1, "Connecting OBDII...");
     writeCenteredRow(2, "");
+    renderCellularStatusLine();
 }
 
 void DisplayManager::renderStatusWaitEcu() {
     writeCenteredRow(1, "OBDII Connected");
     writeCenteredRow(2, "Waiting for ECU...");
+    renderCellularStatusLine();
+}
+
+// Row 3 (last line) is otherwise idle while we're not yet showing the full
+// dashboard (RPM bar only exists in DASHBOARD mode), so it's used here to
+// surface the SIM800L/cellular link state and whether a telemetry send is
+// currently in flight. Uses the writeIfChanged() cache pattern so it doesn't
+// spam I2C traffic when nothing changed between updateAll() calls.
+void DisplayManager::renderCellularStatusLine() {
+    ESIMSTATUS esim = VehicleData::getInstance().getEsimStatus();
+
+    String statusText;
+    switch (esim) {
+        case ESIMSTATUS::CONNECTED:
+            statusText = "GSM:Online";
+            break;
+        case ESIMSTATUS::DISCONNECTED:
+            statusText = "GSM:Offline";
+            break;
+        case ESIMSTATUS::WITHOUT_SIM:
+            statusText = "GSM:No SIM";
+            break;
+        default:
+            statusText = "GSM:?";
+            break;
+    }
+
+    statusText += SIM800LManager::isSendInProgress() ? " Sending..." : " Idle";
+
+    String line = centerText(statusText, m_cols);
+    writeIfChanged(0, 3, line, m_cacheCellStatus);
 }
 
 void DisplayManager::renderDashboard() {
@@ -301,9 +335,11 @@ void DisplayManager::updateAll() {
     switch (target) {
         case DisplayMode::STATUS_CONNECTING:
             if (modeChanged) renderStatusConnecting();
+            else renderCellularStatusLine();
             break;
         case DisplayMode::STATUS_WAIT_ECU:
             if (modeChanged) renderStatusWaitEcu();
+            else renderCellularStatusLine();
             break;
         case DisplayMode::DASHBOARD:
             renderDashboard();
