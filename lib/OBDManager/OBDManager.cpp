@@ -19,6 +19,8 @@ String pendingResponseText;
 }
 
 bool OBDManager::isScanning = false;
+bool OBDManager::scanNeedsClear = false;
+unsigned long OBDManager::scanStartTime = 0;
 BLEAdvertisedDevice* OBDManager::foundTargetDevice = nullptr;
 BLEClient* OBDManager::pClient = nullptr;
 BLERemoteCharacteristic* OBDManager::pCharTX = nullptr;
@@ -45,7 +47,6 @@ OBDManager::OBDManager() {}
 OBDManager::~OBDManager() {}
 
 void OBDManager::onScanCompleted(BLEScanResults scanResults) {
-    BLEScan* pBLEScan = BLEDevice::getScan();
     BLEUUID targetUUID(OBDII_SERVICE_UUID);
 
     bool adapterFound = false;
@@ -74,12 +75,29 @@ void OBDManager::onScanCompleted(BLEScanResults scanResults) {
         }
     }
 
-    pBLEScan->clearResults();
+    // NOTE: Do NOT call pBLEScan->clearResults() (or any other heavy BLEScan
+    // API) here. This callback runs on the Bluedroid/NimBLE host task, not
+    // on loop(). Calling clearResults() from within the scan-completion
+    // callback itself has been observed to leave the BLE stack's internal
+    // scan state in a bad spot, causing the *next* pBLEScan->start() call
+    // (issued later from loop()-context) to block forever on an internal
+    // semaphore/mutex that is never released - silently hanging the whole
+    // firmware with no further log output. Results are cleared instead at
+    // the start of the next scanAndConnect() call, safely from loop().
     isScanning = false;
+    scanNeedsClear = true;
 
     if (!adapterFound) {
         DebugSerial::println("No OBD-II adapter found.");
-        obdDisconnectedFlag = 0;
+        // This must be 1, not 0: it's a flag-watcher counter consumed by
+        // main.cpp's setObdStatustoOffline(), which is what resets the
+        // OBDII status back to DISCONNECTED. Without this, the status
+        // stays stuck in TRYING_TO_CONNECT forever after an unsuccessful
+        // scan, and startOBDIIConnection()'s guard
+        // (status == DISCONNECTED) means scanAndConnect() is never called
+        // again - the firmware looks "frozen" even though it's still
+        // running fine.
+        obdDisconnectedFlag = 1;
     }
 }
 
@@ -93,12 +111,21 @@ void OBDManager::scanAndConnect() {
     if (isScanning) return;
     if (pClient != nullptr && pClient->isConnected()) return;
 
+    BLEScan* pBLEScan = BLEDevice::getScan();
+
+    // Clear results from a previous scan here, in loop()-context, instead
+    // of inside the BLE-task scan-completion callback (see note above).
+    if (scanNeedsClear) {
+        pBLEScan->clearResults();
+        scanNeedsClear = false;
+    }
+
     DebugSerial::println("BLE Scan started (asynchronous)");
     obdConnectionAttemptFlag = 1;
 
-    BLEScan* pBLEScan = BLEDevice::getScan();
     pBLEScan->setActiveScan(true);
     isScanning = true;
+    scanStartTime = millis();
     pBLEScan->start(OBDII_SCAN_TIME_SEC, onScanCompleted, false);
 }
 
@@ -205,9 +232,9 @@ void OBDManager::sendCommand(String command) {
 
     unsigned long writeStart = millis();
     
-    // Executa a escrita sem capturar o retorno diretamente na variável booleana
+    // Perform write without capturing return directly into a boolean variable
     pCharTX->writeValue((uint8_t*)command.c_str(), command.length(), true);
-    bool ok = true; // Como o writeValue moderno não retorna bool na sua versão atual, assumimos sucesso no envio ATT ou tratamos pelo fluxo de resposta/timeout.
+    bool ok = true; // Since modern writeValue does not return bool in its current version, assume successful ATT transmission or handle via response/timeout flow.
     
     unsigned long writeDuration = millis() - writeStart;
 
@@ -216,8 +243,8 @@ void OBDManager::sendCommand(String command) {
                           " tomou " + String(writeDuration) + "ms");
                           
     if (!ok) {
-        // Write falhou no nível ATT — trata como se tivesse dado timeout
-        // pra não travar a máquina de estados esperando resposta que não virá.
+        // Write failed at the ATT level - treat as a timeout so the state
+        // machine does not get stuck waiting for a response that will never arrive.
         portENTER_CRITICAL(&stateMux);
         messageReceived = true;
         portEXIT_CRITICAL(&stateMux);
@@ -271,6 +298,24 @@ void OBDManager::addCommandToQueue(const String& command) {
 }
 
 void OBDManager::update() {
+    // Watchdog: the BLE stack's async scan completion callback
+    // (onScanCompleted) is not always guaranteed to fire (seen with some
+    // arduino-esp32 core / NimBLE-Bluedroid combinations). If that happens,
+    // isScanning would stay true forever and scanAndConnect() would just
+    // keep silently returning early every second, with no further log
+    // output and no way to recover. Force-stop and reset after a grace
+    // period well beyond the configured scan duration.
+    if (isScanning) {
+        const unsigned long scanWatchdogMs = (unsigned long)(OBDII_SCAN_TIME_SEC) * 1000UL + 5000UL;
+        if (millis() - scanStartTime >= scanWatchdogMs) {
+            DebugSerial::println("WARNING: BLE scan watchdog triggered, scan callback never fired. Forcing stop.");
+            BLEDevice::getScan()->stop();
+            BLEDevice::getScan()->clearResults();
+            isScanning = false;
+            obdDisconnectedFlag = 1;
+        }
+    }
+
     BLEAdvertisedDevice* targetDevice = nullptr;
     portENTER_CRITICAL(&foundTargetDeviceMux);
     targetDevice = foundTargetDevice;
