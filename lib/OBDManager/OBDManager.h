@@ -33,6 +33,8 @@ public:
     
 private:
     static bool isScanning;
+    static bool scanNeedsClear;
+    static unsigned long scanStartTime;
     static BLEAdvertisedDevice* foundTargetDevice;
     static void onScanCompleted(BLEScanResults scanResults);
     static BLEClient* pClient;

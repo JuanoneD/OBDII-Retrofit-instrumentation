@@ -15,10 +15,15 @@
 // -----------------------------------------------------------------------------
 // Hardware Pinout (ESP32)
 // -----------------------------------------------------------------------------
+#define SIM800_RX_PIN                 16
+#define SIM800_TX_PIN                 17
+#define SIM800_RST_PIN                5
 
 // -----------------------------------------------------------------------------
 // Timer Intervals (in milliseconds)
 // -----------------------------------------------------------------------------
+#define CELLULAR_SEND_INTERVAL_MS     15000
+#define SIM800_UPDATE_INTERVAL_MS     100
 
 // -----------------------------------------------------------------------------
 // Flag & Cycle Counter Configurations
@@ -38,6 +43,37 @@ enum class ECUSTATUS {
     OFFLINE,
     ONLINE
 };
+
+enum class ESIMSTATUS {
+    WITHOUT_SIM,
+    DISCONNECTED,
+    CONNECTED
+};
+
+using SIMSTATUS = ESIMSTATUS;
+
+// -----------------------------------------------------------------------------
+// Cellular (SIM800L / eSIM) & Backend Configuration
+// -----------------------------------------------------------------------------
+#define SIM800_BAUD_RATE              9600
+#define SIM800_APN                    "vivo.com.br"
+#define SIM800_APN_USER               ""
+#define SIM800_APN_PASS               ""
+
+// Load sensitive endpoints/credentials from secrets.h (ignored by Git)
+#if __has_include("secrets.h")
+    #include "secrets.h"
+#elif __has_include("secrets.example.h")
+    #include "secrets.example.h"
+#endif
+
+#ifndef BACKEND_HTTP_ENDPOINT
+    #define BACKEND_HTTP_ENDPOINT     "http://127.0.0.1:5000"
+#endif
+
+#define HTTP_POST_ENDPOINT            BACKEND_HTTP_ENDPOINT
+#define SIM800_HTTP_ENDPOINT          BACKEND_HTTP_ENDPOINT
+#define CELLULAR_HTTP_ENDPOINT        BACKEND_HTTP_ENDPOINT
 
 // -----------------------------------------------------------------------------
 // OBDII Manager defines

@@ -1,6 +1,7 @@
 #include "DisplayManager.h"
 #include "VehicleData.h"
 #include "DebugSerial.h"
+#include "SIM800LManager.h"
 
 // Full-block character available on HD44780 character ROMs.
 static constexpr uint8_t LCD_BLOCK_CHAR = 0xFF;
@@ -64,6 +65,7 @@ void DisplayManager::invalidateCache() {
     m_cacheTemp         = "";
     m_cacheLoad         = "";
     m_cacheLtft         = "";
+    m_cacheCellStatus   = "";
     m_cacheRpmBarBlocks = -1;
 }
 
@@ -139,11 +141,11 @@ String DisplayManager::formatLtft(float trimPct) {
     if (trimPct < -99.0f) trimPct = -99.0f;
     if (trimPct > 99.0f)  trimPct = 99.0f;
     
-    // Arredonda corretamente o float para inteiro (ex: 3.2 -> 3, -1.2 -> -1)
+    // Correctly round float to integer (e.g. 3.2 -> 3, -1.2 -> -1)
     int val = (int)(trimPct + (trimPct >= 0 ? 0.5f : -0.5f));
     
     char buf[8];
-    // Formata explicitamente com o sinal (+ ou -) seguido do número e do '%'
+    // Explicitly format with sign (+ or -) followed by the number and '%'
     snprintf(buf, sizeof(buf), "%+d%% ", val);
     return String(buf);
 }
@@ -204,11 +206,43 @@ void DisplayManager::enterMode(DisplayMode mode) {
 void DisplayManager::renderStatusConnecting() {
     writeCenteredRow(1, "Connecting OBDII...");
     writeCenteredRow(2, "");
+    renderCellularStatusLine();
 }
 
 void DisplayManager::renderStatusWaitEcu() {
     writeCenteredRow(1, "OBDII Connected");
     writeCenteredRow(2, "Waiting for ECU...");
+    renderCellularStatusLine();
+}
+
+// Row 3 (last line) is otherwise idle while we're not yet showing the full
+// dashboard (RPM bar only exists in DASHBOARD mode), so it's used here to
+// surface the SIM800L/cellular link state and whether a telemetry send is
+// currently in flight. Uses the writeIfChanged() cache pattern so it doesn't
+// spam I2C traffic when nothing changed between updateAll() calls.
+void DisplayManager::renderCellularStatusLine() {
+    ESIMSTATUS esim = VehicleData::getInstance().getEsimStatus();
+
+    String statusText;
+    switch (esim) {
+        case ESIMSTATUS::CONNECTED:
+            statusText = "GSM:Online";
+            break;
+        case ESIMSTATUS::DISCONNECTED:
+            statusText = "GSM:Offline";
+            break;
+        case ESIMSTATUS::WITHOUT_SIM:
+            statusText = "GSM:No SIM";
+            break;
+        default:
+            statusText = "GSM:?";
+            break;
+    }
+
+    statusText += SIM800LManager::isSendInProgress() ? " Sending..." : " Idle";
+
+    String line = centerText(statusText, m_cols);
+    writeIfChanged(0, 3, line, m_cacheCellStatus);
 }
 
 void DisplayManager::renderDashboard() {
@@ -249,7 +283,7 @@ void DisplayManager::renderDashboard() {
     writeIfChanged(5,  2, formatLoad(v.getEngineLoad()),        m_cacheLoad);
     writeIfChanged(16, 2, formatLtft(v.getLongTermFuelTrim()),  m_cacheLtft);
 
-    // Row 3: RPM bar (intocada)
+    // Row 3: RPM bar (untouched)
     renderRpmBar(v.getEngineRPM());
 }
 
@@ -301,9 +335,11 @@ void DisplayManager::updateAll() {
     switch (target) {
         case DisplayMode::STATUS_CONNECTING:
             if (modeChanged) renderStatusConnecting();
+            else renderCellularStatusLine();
             break;
         case DisplayMode::STATUS_WAIT_ECU:
             if (modeChanged) renderStatusWaitEcu();
+            else renderCellularStatusLine();
             break;
         case DisplayMode::DASHBOARD:
             renderDashboard();

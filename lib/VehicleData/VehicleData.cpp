@@ -1,5 +1,6 @@
 #include "VehicleData.h"
 #include "DebugSerial.h"
+#include <math.h>
 
 VehicleData& VehicleData::getInstance() {
     static VehicleData instance;
@@ -9,6 +10,7 @@ VehicleData& VehicleData::getInstance() {
 VehicleData::VehicleData()
     : obdiiStatus(OBDIISTATUS::DISCONNECTED),
       ecustatus(ECUSTATUS::OFFLINE),
+      esimStatus(ESIMSTATUS::DISCONNECTED),
       engineRPM(0),
       vehicleSpeed(0),
       coolantTemp(0),
@@ -46,15 +48,24 @@ void VehicleData::loadPersistentData() {
     if (!preferences.isKey("factor")) {
         preferences.putFloat("factor", DEFAULT_FUEL_CONSUMPTION_FACTOR);
     }
+    if(fuelConsumptionFactor <= 0.0f) {
+        fuelConsumptionFactor = DEFAULT_FUEL_CONSUMPTION_FACTOR;
+        preferences.putFloat("factor", DEFAULT_FUEL_CONSUMPTION_FACTOR);
+    }
 
-    totalDistance = preferences.getFloat("distance", DEFAULT_TOTAL_DISTANCE);
+    totalDistance = preferences.getDouble("distance", DEFAULT_TOTAL_DISTANCE);
     if (!preferences.isKey("distance")) {
-        preferences.putFloat("distance", DEFAULT_TOTAL_DISTANCE);
+        preferences.putDouble("distance", DEFAULT_TOTAL_DISTANCE);
     }
 
     tripConsumption = preferences.getFloat("tripFuel", DEFAULT_TRIP_CONSUMPTION);
     if (!preferences.isKey("tripFuel")) {
         preferences.putFloat("tripFuel", DEFAULT_TRIP_CONSUMPTION);
+    }
+
+    syncVersion = preferences.getInt("sync_version", DEFAULT_SYNC_VERSION);
+    if (!preferences.isKey("sync_version")) {
+        preferences.putInt("sync_version", DEFAULT_SYNC_VERSION);
     }
 
     DebugSerial::println("[VehicleData] Loaded persistent data from NVS:");
@@ -83,6 +94,14 @@ ECUSTATUS VehicleData::getEcuStatus() const {
 
 void VehicleData::setEcuStatus(ECUSTATUS status) {
     ecustatus = status;
+}
+
+ESIMSTATUS VehicleData::getEsimStatus() const {
+    return esimStatus;
+}
+
+void VehicleData::setEsimStatus(ESIMSTATUS status) {
+    esimStatus = status;
 }
 
 // -----------------------------------------------------------------------------
@@ -188,17 +207,26 @@ float VehicleData::getFuelConsumptionFactor() const {
 }
 
 void VehicleData::setFuelConsumptionFactor(float factor) {
+    // Defensive guard: never persist NaN, +/-Infinity, zero or negative
+    // values. This is the calibration constant used to compute instant fuel
+    // consumption, so a degenerate value here would zero out or blow up the
+    // calculation (e.g. if it comes corrupted/truncated from the backend).
+    if (!isfinite(factor) || factor <= 0.0f) {
+        DebugSerial::println("[VehicleData] WARNING: Rejected invalid fuelConsumptionFactor (" +
+                              String(factor, 10) + "). Keeping previous value.");
+        return;
+    }
     fuelConsumptionFactor = factor;
     preferences.putFloat("factor", fuelConsumptionFactor);
 }
 
-float VehicleData::getTotalDistance() const {
+double VehicleData::getTotalDistance() const {
     return totalDistance;
 }
 
-void VehicleData::setTotalDistance(float distance) {
+void VehicleData::setTotalDistance(double distance) {
     totalDistance = distance;
-    preferences.putFloat("distance", totalDistance);
+    preferences.putDouble("distance", totalDistance);
 }
 
 float VehicleData::getTripConsumption() const {
@@ -208,4 +236,13 @@ float VehicleData::getTripConsumption() const {
 void VehicleData::setTripConsumption(float consumption) {
     tripConsumption = consumption;
     preferences.putFloat("tripFuel", tripConsumption);
+}
+
+void VehicleData::setSyncVersion(int version) {
+    syncVersion = version;
+    preferences.putInt("sync_version", syncVersion);
+}
+
+int VehicleData::getSyncVersion() const {
+    return syncVersion;
 }
