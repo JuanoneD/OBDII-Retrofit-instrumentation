@@ -116,6 +116,9 @@ using SIMSTATUS = ESIMSTATUS;
 #define PID_CONTROL_MODULE_VOLTAGE_STR  "0142"
 #define PID_THROTTLE_POSITION_STR       "0111"
 
+// Command string for requesting stored Diagnostic Trouble Codes (Mode 03)
+#define OBD_CMD_REQUEST_DTCS            "03"
+
 // -----------------------------------------------------------------------------
 // OBD-II Mathematical Constants for Formulas
 // -----------------------------------------------------------------------------

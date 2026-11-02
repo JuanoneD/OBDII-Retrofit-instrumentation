@@ -2,6 +2,7 @@
 #define OBD_DECODER_H
 
 #include <Arduino.h>
+#include <vector>
 #include "config.h"
 #include "DebugSerial.h"
 #include "VehicleData.h"
@@ -12,6 +13,7 @@ public:
     ~OBDDecoder();
 
     static void decode(const String& rawResponse);
+    static void decodeDTC(const String& rawResponse);
 
 // Signals
     static int ecu_online_flag;

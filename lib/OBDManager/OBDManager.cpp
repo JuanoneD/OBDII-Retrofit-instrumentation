@@ -1,6 +1,7 @@
 #include "OBDManager.h"
 #include "config.h"
 #include "CallbackManager.h"
+#include "VehicleData.h"
 
 namespace {
 portMUX_TYPE foundTargetDeviceMux = portMUX_INITIALIZER_UNLOCKED;
@@ -41,6 +42,9 @@ bool OBDManager::callbackInit = false;
 int OBDManager::obdConnectedFlag = 0;
 int OBDManager::obdDisconnectedFlag = 0;
 int OBDManager::obdConnectionAttemptFlag = 0;
+int OBDManager::dtcCollectionEndedFlag = 0;
+bool OBDManager::dtcCollectionMode = false;
+int OBDManager::numberOfDTCstoCollect = 0;
 RawMessageCallback OBDManager::rawMessageCallback = nullptr;
 
 OBDManager::OBDManager() {}
@@ -220,7 +224,7 @@ void OBDManager::sendCommand(String command) {
 
     if (!command.endsWith("\r")) command += "\r";
 
-    unsigned long timeoutToUse = trimmedCommand.startsWith("AT") ? AT_COMMAND_TIMEOUT : DEFAULT_TIMEOUT;
+    unsigned long timeoutToUse = (trimmedCommand.startsWith("AT") || trimmedCommand == OBD_CMD_REQUEST_DTCS) ? AT_COMMAND_TIMEOUT : DEFAULT_TIMEOUT;
 
     portENTER_CRITICAL(&stateMux);
     lastCommandSent = trimmedCommand;
@@ -285,6 +289,9 @@ void OBDManager::clearCommandQueue() {
 }
 
 void OBDManager::addCommandToQueue(const String& command) {
+    if (dtcCollectionMode && command != OBD_CMD_REQUEST_DTCS) {
+        return;
+    }
     bool canSendNow;
     portENTER_CRITICAL(&stateMux);
     canSendNow = commandQueue.empty() && messageReceived;
@@ -377,6 +384,10 @@ void OBDManager::update() {
 
     if (timedOut) {
         DebugSerial::println("ERROR: Timeout waiting for response to: " + timedOutCommand);
+        if (dtcCollectionMode && timedOutCommand.startsWith(OBD_CMD_REQUEST_DTCS)) {
+            DebugSerial::println("[OBDManager] DTC collection request timed out.");
+            endDTCCollection(0);
+        }
     }
 
     static bool wasConnected = false;
@@ -387,9 +398,49 @@ void OBDManager::update() {
     } else if (wasConnected) {
         obdDisconnectedFlag = 1;
         wasConnected = false;
+        if (dtcCollectionMode) {
+            endDTCCollection(0);
+        }
     }
 }
 
 void OBDManager::setRawMessageCallback(RawMessageCallback callback) {
     rawMessageCallback = callback;
+}
+
+void OBDManager::startedCollectDTCsMode() {
+    if (VehicleData::getInstance().getEcuStatus() != ECUSTATUS::ONLINE) {
+        DebugSerial::println("[OBDManager] Cannot start DTC collection: ECU is offline.");
+        return;
+    }
+
+    if (pClient == nullptr || !pClient->isConnected()) {
+        DebugSerial::println("[OBDManager] Cannot start DTC collection: OBD-II not connected.");
+        return;
+    }
+
+    DebugSerial::println("[OBDManager] Starting DTC collection mode...");
+    dtcCollectionMode = true;
+    dtcCollectionEndedFlag = 0;
+    numberOfDTCstoCollect = 0;
+    VehicleData::getInstance().clearDTCs();
+    VehicleData::getInstance().setRequestDTCsOnStarted(1);
+
+    clearCommandQueue();
+    addCommandToQueue(OBD_CMD_REQUEST_DTCS);
+}
+
+bool OBDManager::isDtcCollectionMode() {
+    return dtcCollectionMode;
+}
+
+void OBDManager::endDTCCollection(int count) {
+    numberOfDTCstoCollect = count;
+    dtcCollectionMode = false;
+    dtcCollectionEndedFlag = 1;
+    DebugSerial::println("[OBDManager] DTC collection ended. Total DTCs: " + String(count));
+}
+
+int OBDManager::getNumberOfDTCstoCollect() {
+    return numberOfDTCstoCollect;
 }

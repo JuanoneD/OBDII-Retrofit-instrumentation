@@ -2,6 +2,7 @@
 #define VEHICLE_DATA_H
 
 #include <Arduino.h>
+#include <vector>
 #include <Preferences.h>
 #include "config.h"
 
@@ -70,6 +71,19 @@ public:
     int getSyncVersion() const;
     void setSyncVersion(int version);
 
+    int getDiagnoseMode() const;
+    void setDiagnoseMode(int mode);
+
+    int getRequestDTCsOnStarted() const;
+    void setRequestDTCsOnStarted(int request);
+
+    // --- Diagnostic Trouble Codes (DTCs) ---
+    std::vector<String> getDTCs() const;
+    void setDTCs(const std::vector<String>& dtcs);
+    void addDTC(const String& dtc);
+    void clearDTCs();
+    int getDTCCount() const;
+
 private:
     VehicleData();
     ~VehicleData();
@@ -95,6 +109,9 @@ private:
     float moduleVoltage;
     float longTermFuelTrim;
     float mapPressure;
+    std::vector<String> dtcList;
+    // when the diagnosic mode is enabled, this flag is to marker if the DTCs have been requested; Is not persisted because the DTCs request must be done every time the system is started
+    int requestDTCsOnStarted; 
 
     // Persistent attributes
     float gasolineLevel;
@@ -104,6 +121,7 @@ private:
                              // increments once mileage reaches typical
                              // lifetime values (e.g. 100,000+ km) with float.
     float tripConsumption;
+    int diagnoseMode; // 0 = disabled, 1 = enabled
     int syncVersion;
 
     // Default constants for persistence
@@ -113,6 +131,7 @@ private:
     static constexpr double DEFAULT_TOTAL_DISTANCE = 0.0;
     static constexpr float DEFAULT_TRIP_CONSUMPTION = 0.0f;
     static constexpr int DEFAULT_SYNC_VERSION = 0;
+    static constexpr int DEFAULT_DIAGNOSE_MODE = 0;
 };
 
 #endif // VEHICLE_DATA_H

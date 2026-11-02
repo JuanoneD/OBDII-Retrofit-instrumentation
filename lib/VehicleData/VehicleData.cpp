@@ -24,7 +24,9 @@ VehicleData::VehicleData()
       tankCapacity(DEFAULT_TANK_CAPACITY),
       fuelConsumptionFactor(DEFAULT_FUEL_CONSUMPTION_FACTOR),
       totalDistance(DEFAULT_TOTAL_DISTANCE),
-      tripConsumption(DEFAULT_TRIP_CONSUMPTION) {
+      tripConsumption(DEFAULT_TRIP_CONSUMPTION),
+      requestDTCsOnStarted(DEFAULT_DIAGNOSE_MODE),
+      diagnoseMode(DEFAULT_DIAGNOSE_MODE) {
 }
 
 VehicleData::~VehicleData() {
@@ -68,12 +70,19 @@ void VehicleData::loadPersistentData() {
         preferences.putInt("sync_version", DEFAULT_SYNC_VERSION);
     }
 
+    diagnoseMode = preferences.getInt("diagnose_mode", DEFAULT_DIAGNOSE_MODE);
+    if (!preferences.isKey("diagnose_mode")) {
+        preferences.putInt("diagnose_mode", DEFAULT_DIAGNOSE_MODE);
+    }
+
     DebugSerial::println("[VehicleData] Loaded persistent data from NVS:");
     DebugSerial::println("  Tank Capacity: " + String(tankCapacity) + " L");
     DebugSerial::println("  Gasoline Level: " + String(gasolineLevel) + " L");
     DebugSerial::println("  Fuel Consumption Factor: " + String(fuelConsumptionFactor));
     DebugSerial::println("  Total Distance: " + String(totalDistance) + " km");
     DebugSerial::println("  Trip Consumption: " + String(tripConsumption) + " L");
+    DebugSerial::println("  Request DTCs on Start: " + String(requestDTCsOnStarted));
+    DebugSerial::println("  Diagnose Mode: " + String(diagnoseMode));
 }
 
 // -----------------------------------------------------------------------------
@@ -245,4 +254,41 @@ void VehicleData::setSyncVersion(int version) {
 
 int VehicleData::getSyncVersion() const {
     return syncVersion;
+}
+
+int VehicleData::getDiagnoseMode() const {
+    return diagnoseMode;
+}
+
+void VehicleData::setDiagnoseMode(int mode) {
+    diagnoseMode = mode;
+    preferences.putInt("diagnose_mode", diagnoseMode);
+}
+
+int VehicleData::getRequestDTCsOnStarted() const {
+    return requestDTCsOnStarted;
+}
+
+void VehicleData::setRequestDTCsOnStarted(int request) {
+    requestDTCsOnStarted = request;
+}
+
+std::vector<String> VehicleData::getDTCs() const {
+    return dtcList;
+}
+
+void VehicleData::setDTCs(const std::vector<String>& dtcs) {
+    dtcList = dtcs;
+}
+
+void VehicleData::addDTC(const String& dtc) {
+    dtcList.push_back(dtc);
+}
+
+void VehicleData::clearDTCs() {
+    dtcList.clear();
+}
+
+int VehicleData::getDTCCount() const {
+    return (int)dtcList.size();
 }

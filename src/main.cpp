@@ -159,6 +159,10 @@ void setup() {
     CallbackManager::addFlagWatcher(&OBDManager::obdConnectedFlag,setObdStatustoConnected);
     CallbackManager::addFlagWatcher(&OBDManager::obdDisconnectedFlag,setObdStatustoOffline);
     CallbackManager::addFlagWatcher(&OBDManager::obdConnectionAttemptFlag,setObdStatustoTryingToConnect);
+    CallbackManager::addFlagWatcher(&OBDManager::dtcCollectionEndedFlag, []() {
+        DebugSerial::println("DTC collection ended flag triggered.");
+        CallbackManager::resumeTimer(ecuMessagesSenderID);
+    });
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_online_flag,setEcuStatustoOnline);
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_offline_flag,setEcuStatustoOffline);
 
