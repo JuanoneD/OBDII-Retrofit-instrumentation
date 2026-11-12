@@ -18,10 +18,11 @@
  *     I2C writes are skipped when the new value matches the cache.
  *
  * Display modes (chosen automatically by updateAll() based on
- * VehicleData status):
- *   - STATUS_CONNECTING : "Connecting OBDII..."
- *   - STATUS_WAIT_ECU   : "OBDII Connected" / "Waiting for ECU..."
- *   - DASHBOARD         : full telemetry + RPM bar
+ * VehicleData and OBDManager status):
+ *   - STATUS_CONNECTING     : "Connecting OBDII..."
+ *   - STATUS_WAIT_ECU       : "OBDII Connected" / "Waiting for ECU..."
+ *   - STATUS_COLLECTING_DTC : "Diagnostic Mode" / "Collecting DTCs..."
+ *   - DASHBOARD             : full telemetry + RPM bar
  */
 
 enum class DisplayField : uint8_t {
@@ -38,6 +39,7 @@ enum class DisplayMode : uint8_t {
     NONE,
     STATUS_CONNECTING,
     STATUS_WAIT_ECU,
+    STATUS_COLLECTING_DTC,
     DASHBOARD
 };
 
@@ -78,6 +80,7 @@ private:
 
     void renderStatusConnecting();
     void renderStatusWaitEcu();
+    void renderStatusCollectingDtc();
     void renderDashboard();
     void renderRpmBar(int rpm);
     void renderCellularStatusLine();

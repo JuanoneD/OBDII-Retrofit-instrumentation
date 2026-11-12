@@ -2,6 +2,7 @@
 #include "VehicleData.h"
 #include "DebugSerial.h"
 #include "SIM800LManager.h"
+#include "OBDManager.h"
 
 // Full-block character available on HD44780 character ROMs.
 static constexpr uint8_t LCD_BLOCK_CHAR = 0xFF;
@@ -191,6 +192,9 @@ void DisplayManager::enterMode(DisplayMode mode) {
         case DisplayMode::STATUS_WAIT_ECU:
             DebugSerial::println("Display: Waiting for ECU...");
             break;
+        case DisplayMode::STATUS_COLLECTING_DTC:
+            DebugSerial::println("Display: Collecting DTCs...");
+            break;
         case DisplayMode::DASHBOARD:
             DebugSerial::println("Display: Dashboard active.");
             break;
@@ -212,6 +216,12 @@ void DisplayManager::renderStatusConnecting() {
 void DisplayManager::renderStatusWaitEcu() {
     writeCenteredRow(1, "OBDII Connected");
     writeCenteredRow(2, "Waiting for ECU...");
+    renderCellularStatusLine();
+}
+
+void DisplayManager::renderStatusCollectingDtc() {
+    writeCenteredRow(1, "Diagnostic Mode");
+    writeCenteredRow(2, "Collecting DTCs...");
     renderCellularStatusLine();
 }
 
@@ -323,6 +333,8 @@ void DisplayManager::updateAll() {
         target = DisplayMode::STATUS_CONNECTING;
     } else if (ecu != ECUSTATUS::ONLINE) {
         target = DisplayMode::STATUS_WAIT_ECU;
+    } else if (OBDManager::isDtcCollectionMode()) {
+        target = DisplayMode::STATUS_COLLECTING_DTC;
     } else {
         target = DisplayMode::DASHBOARD;
     }
@@ -339,6 +351,10 @@ void DisplayManager::updateAll() {
             break;
         case DisplayMode::STATUS_WAIT_ECU:
             if (modeChanged) renderStatusWaitEcu();
+            else renderCellularStatusLine();
+            break;
+        case DisplayMode::STATUS_COLLECTING_DTC:
+            if (modeChanged) renderStatusCollectingDtc();
             else renderCellularStatusLine();
             break;
         case DisplayMode::DASHBOARD:

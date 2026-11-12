@@ -184,6 +184,11 @@ private:
                                    const String& jsonPayload, String* responseBody,
                                    int* statusCode);
 
+    // Connect-failure diagnostics (DNS vs TCP reachability vs transient).
+    // Runs via AT commands while the GPRS PDP context is still alive, i.e.
+    // must be called BEFORE disconnectGPRS(). See implementation for details.
+    static void logConnectFailureDiagnostics(const String& url);
+
     // Command queue & execution state
     static std::queue<String> m_commandQueue;
     static String m_lastCommandSent;

@@ -75,6 +75,14 @@ using SIMSTATUS = ESIMSTATUS;
 #define SIM800_HTTP_ENDPOINT          BACKEND_HTTP_ENDPOINT
 #define CELLULAR_HTTP_ENDPOINT        BACKEND_HTTP_ENDPOINT
 
+// Public IPv4 of the Tailscale Funnel relay that fronts BACKEND_HTTP_ENDPOINT
+// (verify with: nslookup -type=A <funnel-host> 8.8.8.8). Used only by the
+// connect-failure diagnostics (logConnectFailureDiagnostics) to test a raw
+// TCP connection bypassing carrier DNS entirely.
+#ifndef FUNNEL_RELAY_IP
+    #define FUNNEL_RELAY_IP           "209.177.145.97"
+#endif
+
 // -----------------------------------------------------------------------------
 // OBDII Manager defines
 // -----------------------------------------------------------------------------

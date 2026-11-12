@@ -65,6 +65,7 @@ void checkAndTriggerDTCCollection()
     // refuse, in which case the polling timer must stay running.
     if (OBDManager::startedCollectDTCsMode()) {
       CallbackManager::pauseTimer(ecuMessagesSenderID);
+      display.updateAll();
     }
   }
 }
@@ -183,6 +184,7 @@ void setup() {
     CallbackManager::addFlagWatcher(&OBDManager::dtcCollectionEndedFlag, []() {
         DebugSerial::println("DTC collection ended flag triggered.");
         CallbackManager::resumeTimer(ecuMessagesSenderID);
+        display.updateAll();
         if (VehicleData::getInstance().getDTCCount() > 0) {
             DebugSerial::println("[DTC] Errors found, triggering cellular transmission...");
             SIM800LManager::sendNonVolatileData();

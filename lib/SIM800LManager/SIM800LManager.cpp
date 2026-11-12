@@ -722,9 +722,12 @@ bool SIM800LManager::sendHttpPostLocked(const String& url, const String& jsonPay
 
     // statusCode == 0 means we couldn't even connect/get a response (DNS,
     // TCP connect, or TLS handshake failure) - that's a network-level problem,
-    // so drop GPRS and run diagnostics, same policy as before. A proper
-    // 4xx/5xx from the server is NOT a network problem.
+    // so run the connect-failure diagnostics WHILE the GPRS PDP context is
+    // still alive (DNS query and raw TCP test need it), then drop GPRS and
+    // run the general (throttled) diagnostics, same policy as before. A
+    // proper 4xx/5xx from the server is NOT a network problem.
     if (statusCode == 0) {
+        logConnectFailureDiagnostics(url);
         disconnectGPRS();
         logNetworkDiagnostics();
     }
@@ -851,6 +854,92 @@ bool SIM800LManager::httpPostOverClient(Client& client, const String& url,
     if (responseBody) *responseBody = body;
 
     return (code >= 200 && code < 300);
+}
+
+// ---------------------------------------------------------------------------
+// Connect-failure diagnostics (DNS vs TCP reachability vs transient)
+// ---------------------------------------------------------------------------
+// Called from sendHttpPostLocked() when the TCP/TLS connect() fails, while the
+// GPRS PDP context is still alive (must run BEFORE disconnectGPRS()).
+// NOTE: AT+CIPSTART/AT+CDNSGIP are NOT usable here: while TinyGSM manages the
+// data connection the modem answers "+CME ERROR: operation not allowed" to
+// them (confirmed on the field), so those results are inconclusive. Instead,
+// the tests below use the exact same path the firmware uses (TinyGsmClient):
+//   1. Raw TCP to the Funnel relay BY IP  -> carrier path + port reachability
+//   2. Raw TCP to the backend BY HOSTNAME -> adds DNS on top
+// If (1) passes and (2) fails, the problem is 100% carrier DNS.
+void SIM800LManager::logConnectFailureDiagnostics(const String& url) {
+    if (!ensureModemClientsInitialized()) {
+        DebugSerial::println("[SIM800L][NETDIAG] Modem/client not initialized, cannot run diagnostics.");
+        return;
+    }
+
+    // Parse the host out of the URL (same logic as httpPostOverClient()).
+    String rest = url;
+    if (rest.startsWith("https://")) rest.remove(0, 8);
+    else if (rest.startsWith("http://")) rest.remove(0, 7);
+    int pathIdx = rest.indexOf('/');
+    String hostPort = (pathIdx == -1) ? rest : rest.substring(0, pathIdx);
+    int colonIdx = hostPort.indexOf(':');
+    String host = (colonIdx == -1) ? hostPort : hostPort.substring(0, colonIdx);
+
+    DebugSerial::println("[SIM800L][NETDIAG] ---- Connect failure diagnostics ----");
+
+    // Quick signal snapshot at the exact moment of the failure.
+    String csq = sendATCommand("AT+CSQ", 2000, "OK");
+    int csqIdx = csq.indexOf("+CSQ:");
+    if (csqIdx != -1) {
+        int rssi = csq.substring(csqIdx + 5).toInt();
+        if (rssi == 99) {
+            DebugSerial::println("[SIM800L][NETDIAG] Signal: 99 (sem sinal/desconhecido)");
+        } else {
+            DebugSerial::println("[SIM800L][NETDIAG] Signal: " + String(rssi) +
+                                 " (~" + String(-113 + 2 * rssi) + " dBm)");
+        }
+    }
+
+    // 1. Raw TCP to the Tailscale Funnel relay BY IP, bypassing DNS entirely
+    //    (address from FUNNEL_RELAY_IP in config.h; verify it still matches
+    //    the backend's funnel host if the endpoint ever changes). This uses
+    //    the very same TinyGsmClient path the firmware uses for the real
+    //    request, so it is a faithful test of carrier reachability.
+    String relayIp = FUNNEL_RELAY_IP;
+    bool ipOk = m_gsmClient->connect(relayIp.c_str(), 443);
+    if (ipOk) {
+        DebugSerial::println("[SIM800L][NETDIAG] Raw TCP " + relayIp + ":443 (relay Funnel): CONNECTED -> operadora permite o trafego; a falha e de DNS.");
+        m_gsmClient->stop();
+    } else {
+        DebugSerial::println("[SIM800L][NETDIAG] Raw TCP " + relayIp + ":443 (relay Funnel): FAILED.");
+        // Control tests: if a well-known host ALSO fails, the carrier is
+        // blocking ALL outbound TCP (or data is effectively down despite the
+        // IP assignment). If they succeed, the block is specific to the
+        // Tailscale relay address range.
+        bool ctrlIpOk = m_gsmClient->connect("1.1.1.1", 443);
+        DebugSerial::println("[SIM800L][NETDIAG] Control raw TCP 1.1.1.1:443: " +
+                             (ctrlIpOk ? String("CONNECTED -> bloqueio especifico do relay do Tailscale, nao da operadora em geral.") : String("FAILED -> TODA saida TCP esta bloqueada/sem dados reais (IP atribuido mas PDP inoperante).")));
+        if (ctrlIpOk) m_gsmClient->stop();
+
+        bool ctrlDnsOk = m_gsmClient->connect("google.com", 443);
+        DebugSerial::println("[SIM800L][NETDIAG] Control raw TCP google.com:443 (via DNS): " +
+                             (ctrlDnsOk ? String("CONNECTED -> DNS e TCP gerais funcionam.") : String("FAILED.")));
+        if (ctrlDnsOk) m_gsmClient->stop();
+    }
+
+    // 2. Raw TCP to the backend hostname (TinyGSM resolves via the modem's
+    //    DNS). If (1) connected but this fails, carrier DNS is the culprit.
+    if (ipOk) {
+        bool dnsOk = m_gsmClient->connect(host.c_str(), 443);
+        if (dnsOk) {
+            DebugSerial::println("[SIM800L][NETDIAG] Raw TCP " + host + ":443 (via DNS): CONNECTED -> DNS e rede OK; falha anterior era transiente (sinal/GPRS).");
+            m_gsmClient->stop();
+        } else {
+            DebugSerial::println("[SIM800L][NETDIAG] Raw TCP " + host + ":443 (via DNS): FAILED -> DNS da operadora nao resolve " + host + " (problema especifico do dominio).");
+        }
+    } else {
+        DebugSerial::println("[SIM800L][NETDIAG] DNS test skipped (raw TCP by IP already failed).");
+    }
+
+    DebugSerial::println("[SIM800L][NETDIAG] ---- End connect failure diagnostics ----");
 }
 
 
