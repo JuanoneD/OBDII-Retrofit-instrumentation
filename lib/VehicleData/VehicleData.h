@@ -80,7 +80,6 @@ public:
     // --- Diagnostic Trouble Codes (DTCs) ---
     std::vector<String> getDTCs() const;
     void setDTCs(const std::vector<String>& dtcs);
-    void addDTC(const String& dtc);
     void clearDTCs();
     int getDTCCount() const;
 

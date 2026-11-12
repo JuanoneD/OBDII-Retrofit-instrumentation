@@ -20,6 +20,7 @@ public:
     static int ecu_offline_flag;
 
 private:
+    static bool isMode03Response(const String& clean);
     static void decodeRPM(const String& data);
     static void decodeVehicleSpeed(const String& data);
     static void decodeCoolantTemp(const String& data);

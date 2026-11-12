@@ -25,7 +25,7 @@ VehicleData::VehicleData()
       fuelConsumptionFactor(DEFAULT_FUEL_CONSUMPTION_FACTOR),
       totalDistance(DEFAULT_TOTAL_DISTANCE),
       tripConsumption(DEFAULT_TRIP_CONSUMPTION),
-      requestDTCsOnStarted(DEFAULT_DIAGNOSE_MODE),
+      requestDTCsOnStarted(0), // not persisted: DTCs must be requested once per boot
       diagnoseMode(DEFAULT_DIAGNOSE_MODE) {
 }
 
@@ -261,8 +261,13 @@ int VehicleData::getDiagnoseMode() const {
 }
 
 void VehicleData::setDiagnoseMode(int mode) {
-    diagnoseMode = mode;
-    preferences.putInt("diagnose_mode", diagnoseMode);
+    if (diagnoseMode != mode) {
+        diagnoseMode = mode;
+        preferences.putInt("diagnose_mode", diagnoseMode);
+        if (diagnoseMode == 1) {
+            requestDTCsOnStarted = 0;
+        }
+    }
 }
 
 int VehicleData::getRequestDTCsOnStarted() const {
@@ -279,10 +284,6 @@ std::vector<String> VehicleData::getDTCs() const {
 
 void VehicleData::setDTCs(const std::vector<String>& dtcs) {
     dtcList = dtcs;
-}
-
-void VehicleData::addDTC(const String& dtc) {
-    dtcList.push_back(dtc);
 }
 
 void VehicleData::clearDTCs() {

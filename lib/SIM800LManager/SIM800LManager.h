@@ -67,7 +67,27 @@ public:
      * @param responseBody Optional pointer to String to store server response body.
      * @return true if HTTP response status is 2xx, false otherwise.
      */
-    static bool sendHttpPost(const String& url, const String& jsonPayload, String* responseBody = nullptr);
+    static bool sendHttpPost(const String& url, const String& jsonPayload, String* responseBody = nullptr, int* statusCodeOut = nullptr);
+
+    /**
+     * @brief Sends stored Diagnostic Trouble Codes (DTCs) to backend via HTTP POST.
+     *        If HTTP response status is 200, the DTCs are cleared from VehicleData.
+     *        Endpoint: device/sendDTCs?idDevices=<mac>
+     *        Body format: {"DTCs": ["FFFF", "FFFF"]}
+     * @param baseUrl Base backend URL (default: BACKEND_HTTP_ENDPOINT)
+     * @return true if HTTP 200 OK was received and DTCs were cleared, false otherwise.
+     */
+    static bool sendDTCs(const String& baseUrl = BACKEND_HTTP_ENDPOINT);
+
+    /**
+     * @brief Formats stored DTCs into JSON body: {"DTCs": ["FFFF", "FFFF"]}
+     */
+    static String buildDTCJson();
+
+    /**
+     * @brief Formats WiFi STA MAC address as XX:XX:XX:XX:XX:XX.
+     */
+    static String getDeviceId();
 
     /**
      * @brief Builds a JSON payload containing all persistent/non-volatile data
@@ -125,6 +145,7 @@ public:
     static int esimConnectedFlag;
     static int esimDisconnectedFlag;
     static int esimWithoutSimFlag;
+    static int diagnoseModeReceivedFlag;
 
     // Convenience reference aliases
     static int& simConnectedFlag;
@@ -145,7 +166,7 @@ private:
 
     // Actual sendHttpPost() body, run while already holding m_serialMutex for
     // its entire duration (see sendHttpPost() in the .cpp for why).
-    static bool sendHttpPostLocked(const String& url, const String& jsonPayload, String* responseBody);
+    static bool sendHttpPostLocked(const String& url, const String& jsonPayload, String* responseBody, int* statusCodeOut = nullptr);
 
     // TinyGSM talks to the SIM800L purely as a "dumb modem" (AT+CIPSTART /
     // AT+CIPSEND raw TCP socket), and SSLClient performs the actual TLS
@@ -176,7 +197,6 @@ private:
                               unsigned long timeoutMs = 5000,
                               const char* expectedResponse = "OK");
     static void readIncoming();
-    static String getDeviceId();
     static void applyServerResponse(const String& body);
 
     // Throttled background recovery for permanent-looking failure states

@@ -26,11 +26,9 @@ public:
     [[deprecated("Use DebugSerial directly")]]
     static void setDebugSerial(Stream* serial = nullptr) { (void)serial; }
     static void setRawMessageCallback(RawMessageCallback callback);
-    static void startedCollectDTCsMode();
-    static void startedCollectionDTCSmode() { startedCollectDTCsMode(); }
+    static bool startedCollectDTCsMode();
     static bool isDtcCollectionMode();
     static void endDTCCollection(int count = 0);
-    static int getNumberOfDTCstoCollect();
 
     
     static int obdConnectedFlag;
@@ -43,7 +41,6 @@ private:
     static bool scanNeedsClear;
     static unsigned long scanStartTime;
     static bool dtcCollectionMode;
-    static int numberOfDTCstoCollect;
     static BLEAdvertisedDevice* foundTargetDevice;
     static void onScanCompleted(BLEScanResults scanResults);
     static BLEClient* pClient;

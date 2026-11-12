@@ -44,7 +44,6 @@ int OBDManager::obdDisconnectedFlag = 0;
 int OBDManager::obdConnectionAttemptFlag = 0;
 int OBDManager::dtcCollectionEndedFlag = 0;
 bool OBDManager::dtcCollectionMode = false;
-int OBDManager::numberOfDTCstoCollect = 0;
 RawMessageCallback OBDManager::rawMessageCallback = nullptr;
 
 OBDManager::OBDManager() {}
@@ -408,26 +407,26 @@ void OBDManager::setRawMessageCallback(RawMessageCallback callback) {
     rawMessageCallback = callback;
 }
 
-void OBDManager::startedCollectDTCsMode() {
+bool OBDManager::startedCollectDTCsMode() {
     if (VehicleData::getInstance().getEcuStatus() != ECUSTATUS::ONLINE) {
         DebugSerial::println("[OBDManager] Cannot start DTC collection: ECU is offline.");
-        return;
+        return false;
     }
 
     if (pClient == nullptr || !pClient->isConnected()) {
         DebugSerial::println("[OBDManager] Cannot start DTC collection: OBD-II not connected.");
-        return;
+        return false;
     }
 
     DebugSerial::println("[OBDManager] Starting DTC collection mode...");
     dtcCollectionMode = true;
     dtcCollectionEndedFlag = 0;
-    numberOfDTCstoCollect = 0;
     VehicleData::getInstance().clearDTCs();
     VehicleData::getInstance().setRequestDTCsOnStarted(1);
 
     clearCommandQueue();
     addCommandToQueue(OBD_CMD_REQUEST_DTCS);
+    return true;
 }
 
 bool OBDManager::isDtcCollectionMode() {
@@ -435,12 +434,7 @@ bool OBDManager::isDtcCollectionMode() {
 }
 
 void OBDManager::endDTCCollection(int count) {
-    numberOfDTCstoCollect = count;
     dtcCollectionMode = false;
     dtcCollectionEndedFlag = 1;
     DebugSerial::println("[OBDManager] DTC collection ended. Total DTCs: " + String(count));
-}
-
-int OBDManager::getNumberOfDTCstoCollect() {
-    return numberOfDTCstoCollect;
 }

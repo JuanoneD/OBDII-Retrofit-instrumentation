@@ -30,6 +30,7 @@ unsigned long SIM800LManager::m_lastConnectionAttemptTime = 0;
 int SIM800LManager::esimConnectedFlag = 0;
 int SIM800LManager::esimDisconnectedFlag = 0;
 int SIM800LManager::esimWithoutSimFlag = 0;
+int SIM800LManager::diagnoseModeReceivedFlag = 0;
 
 int& SIM800LManager::simConnectedFlag = SIM800LManager::esimConnectedFlag;
 int& SIM800LManager::simDisconnectedFlag = SIM800LManager::esimDisconnectedFlag;
@@ -474,17 +475,22 @@ void SIM800LManager::sendTaskTrampoline(void* param) {
         DebugSerial::println("[SIM800L] Triggering non-volatile data POST transmission...");
 
         if (!url.endsWith("/")) url += "/";
-        url += "devices/" + getDeviceId();
-        DebugSerial::println("[SIM800L] Sending non-volatile data to: " + url);
+        String nvUrl = url + "devices/" + getDeviceId();
+        DebugSerial::println("[SIM800L] Sending non-volatile data to: " + nvUrl);
 
         String payload = buildNonVolatileJson();
         String responseBody;
-        bool ok = sendHttpPost(url, payload, &responseBody);
+        bool ok = sendHttpPost(nvUrl, payload, &responseBody);
 
         if (ok && responseBody.length() > 0) {
             applyServerResponse(responseBody);
         } else if (!ok) {
             DebugSerial::println("[SIM800L] Non-volatile POST transmission failed.");
+        }
+
+        // If there are stored DTCs, transmit them to the backend
+        if (VehicleData::getInstance().getDTCCount() > 0) {
+            sendDTCs(url);
         }
     }
 
@@ -535,8 +541,22 @@ void SIM800LManager::applyServerResponse(const String& body) {
         return;
     }
 
+    if (!doc["diagnoseMode"].isNull()) {
+        int newMode = 0;
+        if (doc["diagnoseMode"].is<bool>()) {
+            newMode = doc["diagnoseMode"].as<bool>() ? 1 : 0;
+        } else {
+            newMode = doc["diagnoseMode"].as<int>() != 0 ? 1 : 0;
+        }
+        VehicleData::getInstance().setDiagnoseMode(newMode);
+        DebugSerial::println("[SIM800L] Server updated diagnoseMode to: " + String(newMode));
+        if (newMode == 1) {
+            diagnoseModeReceivedFlag = 1;
+        }
+    }
+
     if (doc["sync_version"].isNull()) {
-        DebugSerial::println("[SIM800L] Server response without sync_version. Ignoring.");
+        DebugSerial::println("[SIM800L] Server response without sync_version. Ignoring non-volatile values.");
         return;
     }
 
@@ -582,7 +602,47 @@ void SIM800LManager::applyServerResponse(const String& body) {
     d.setSyncVersion(version);
 }
 
-bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, String* responseBody) {
+String SIM800LManager::buildDTCJson() {
+    const std::vector<String>& dtcs = VehicleData::getInstance().getDTCs();
+    String json = "{\"DTCs\": [";
+    for (size_t i = 0; i < dtcs.size(); i++) {
+        json += "\"" + dtcs[i] + "\"";
+        if (i + 1 < dtcs.size()) {
+            json += ", ";
+        }
+    }
+    json += "]}";
+    return json;
+}
+
+bool SIM800LManager::sendDTCs(const String& baseUrl) {
+    if (VehicleData::getInstance().getDTCCount() == 0) {
+        DebugSerial::println("[SIM800L] No DTCs to send.");
+        return true;
+    }
+
+    String url = baseUrl;
+    if (!url.endsWith("/")) url += "/";
+    url += "device/sendDTCs?idDevices=" + getDeviceId();
+
+    DebugSerial::println("[SIM800L] Sending DTCs to: " + url);
+    String payload = buildDTCJson();
+    String responseBody;
+    int statusCode = 0;
+
+    bool ok = sendHttpPost(url, payload, &responseBody, &statusCode);
+
+    if (statusCode == 200) {
+        DebugSerial::println("[SIM800L] DTCs successfully sent (HTTP 200). Clearing stored DTCs.");
+        VehicleData::getInstance().clearDTCs();
+        return true;
+    } else {
+        DebugSerial::println("[SIM800L] ERROR: Failed to send DTCs. Status: " + String(statusCode) + ". Preserving DTCs.");
+        return false;
+    }
+}
+
+bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, String* responseBody, int* statusCodeOut) {
     if (!m_hardwareAvailable) {
         DebugSerial::println("[SIM800L] ERROR: Cannot send HTTP POST (Hardware unavailable).");
         return false;
@@ -604,7 +664,7 @@ bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, 
         xSemaphoreTakeRecursive(m_serialMutex, portMAX_DELAY);
     }
 
-    bool result = sendHttpPostLocked(url, jsonPayload, responseBody);
+    bool result = sendHttpPostLocked(url, jsonPayload, responseBody, statusCodeOut);
 
     if (m_serialMutex != nullptr) {
         xSemaphoreGiveRecursive(m_serialMutex);
@@ -613,7 +673,7 @@ bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, 
     return result;
 }
 
-bool SIM800LManager::sendHttpPostLocked(const String& url, const String& jsonPayload, String* responseBody) {
+bool SIM800LManager::sendHttpPostLocked(const String& url, const String& jsonPayload, String* responseBody, int* statusCodeOut) {
     if (m_status != ESIMSTATUS::CONNECTED) {
         DebugSerial::println("[SIM800L] eSIM disconnected. Establishing GPRS first...");
         if (!connectGPRSLocked()) {
@@ -646,6 +706,10 @@ bool SIM800LManager::sendHttpPostLocked(const String& url, const String& jsonPay
         success = httpPostOverClient(*m_sslClient, url, jsonPayload, responseBody, &statusCode);
     } else {
         success = httpPostOverClient(*m_gsmClient, url, jsonPayload, responseBody, &statusCode);
+    }
+
+    if (statusCodeOut != nullptr) {
+        *statusCodeOut = statusCode;
     }
 
     DebugSerial::println("[SIM800L] HTTP POST Result Code: " + String(statusCode));

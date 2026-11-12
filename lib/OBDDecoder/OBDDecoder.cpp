@@ -19,15 +19,22 @@ void OBDDecoder::decode(const String& rawResponse) {
     clean.replace("\n", "");
     clean.toUpperCase();
 
-    // Handle Mode 03 (DTC) response
-    if (clean.indexOf("43") != -1) {
+    // Handle Mode 03 (DTC) response.
+    //
+    // The response line must START with "43" (headers are disabled via ATH0).
+    // A substring search anywhere in the frame would false-positive on PID
+    // data bytes (e.g. a coolant temp reading of 0x43 inside a "41 05 43"
+    // response), causing decodeDTC() to run on a normal PID response, which
+    // wipes the stored DTC list and ends DTC collection prematurely.
+    if (isMode03Response(clean)) {
         decodeDTC(rawResponse);
         ecu_online_flag = 1;
         return;
     }
 
-    // Handle NO DATA response while in DTC collection mode
-    if (OBDManager::isDtcCollectionMode() && (clean.indexOf("NODATA") != -1 || clean.indexOf("NO DATA") != -1)) {
+    // Handle NO DATA response while in DTC collection mode ("NO DATA" becomes
+    // "NODATA" because spaces were stripped above)
+    if (OBDManager::isDtcCollectionMode() && clean.indexOf("NODATA") != -1) {
         decodeDTC(rawResponse);
         return;
     }
@@ -162,6 +169,23 @@ void OBDDecoder::decodeMAP(const String& data) {
     DebugSerial::println("MAP: " + String(map) + " kPa");
 }
 
+// Returns true only if some line of the (spaces-stripped, uppercase) response
+// starts with "43". Lines are split on '\n' so a leading "SEARCHING..." line
+// (printed by some adapters before the actual response) does not break
+// detection, while a "43" appearing mid-line as PID data does not trigger it.
+bool OBDDecoder::isMode03Response(const String& clean) {
+    int lineStart = 0;
+    while (lineStart < (int)clean.length()) {
+        int lineEnd = clean.indexOf('\n', lineStart);
+        if (lineEnd == -1) lineEnd = clean.length();
+        if (clean.substring(lineStart, lineEnd).startsWith("43")) {
+            return true;
+        }
+        lineStart = lineEnd + 1;
+    }
+    return false;
+}
+
 void OBDDecoder::decodeDTC(const String& rawResponse) {
     DebugSerial::println("[OBDDecoder] Receiving DTC response: " + rawResponse);
 
@@ -258,31 +282,23 @@ void OBDDecoder::decodeDTC(const String& rawResponse) {
             if (hasCountByte) {
                 i++; // skip count byte
                 int remainingToCollect = countCandidate;
-                while (i + 1 <= segEnd && remainingToCollect > 0) {
-                    if (i + 1 < bytes.size()) {
-                        uint8_t b1 = bytes[i];
-                        uint8_t b2 = bytes[i + 1];
-                        i += 2;
-                        if (b1 != 0 || b2 != 0) {
-                            addDTCBytes(b1, b2);
-                            remainingToCollect--;
-                        }
-                    } else {
-                        break;
+                while (i + 1 < segEnd && remainingToCollect > 0) {
+                    uint8_t b1 = bytes[i];
+                    uint8_t b2 = bytes[i + 1];
+                    i += 2;
+                    if (b1 != 0 || b2 != 0) {
+                        addDTCBytes(b1, b2);
+                        remainingToCollect--;
                     }
                 }
                 i = segEnd;
             } else {
                 // segLen is EVEN (legacy ISO 9141-2 / J1850 or direct pairs)
-                while (i + 1 <= segEnd) {
-                    if (i + 1 < bytes.size()) {
-                        uint8_t b1 = bytes[i];
-                        uint8_t b2 = bytes[i + 1];
-                        i += 2;
-                        addDTCBytes(b1, b2);
-                    } else {
-                        break;
-                    }
+                while (i + 1 < segEnd) {
+                    uint8_t b1 = bytes[i];
+                    uint8_t b2 = bytes[i + 1];
+                    i += 2;
+                    addDTCBytes(b1, b2);
                 }
                 i = segEnd;
             }

@@ -52,6 +52,23 @@ void messageSendingCallback()
   messageIndex++;
 }
 
+void checkAndTriggerDTCCollection()
+{
+  if (VehicleData::getInstance().getDiagnoseMode() &&
+      !VehicleData::getInstance().getRequestDTCsOnStarted() &&
+      VehicleData::getInstance().getEcuStatus() == ECUSTATUS::ONLINE &&
+      VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::CONNECTED)
+  {
+    DebugSerial::println("[DTC] Diagnose mode active. Requesting DTCs on start...");
+    // Only pause the periodic PID polling if DTC collection actually started;
+    // startedCollectDTCsMode() re-validates ECU/OBD state internally and can
+    // refuse, in which case the polling timer must stay running.
+    if (OBDManager::startedCollectDTCsMode()) {
+      CallbackManager::pauseTimer(ecuMessagesSenderID);
+    }
+  }
+}
+
 void setObdStatustoConnected()
 {
   if (VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::CONNECTED) return;
@@ -61,6 +78,8 @@ void setObdStatustoConnected()
   DebugSerial::println("OBDII Connected!");
   CallbackManager::resumeTimer(ecuMessagesSenderID);
   CallbackManager::resumeTimer(fuelCalculatorID);
+
+  checkAndTriggerDTCCollection();
 }
 
 void setEcuStatustoOnline()
@@ -69,6 +88,8 @@ void setEcuStatustoOnline()
 
   VehicleData::getInstance().setEcuStatus(ECUSTATUS::ONLINE);
   DebugSerial::println("ECU Online!");
+
+  checkAndTriggerDTCCollection();
 }
 
 void setEcuStatustoOffline()
@@ -162,6 +183,10 @@ void setup() {
     CallbackManager::addFlagWatcher(&OBDManager::dtcCollectionEndedFlag, []() {
         DebugSerial::println("DTC collection ended flag triggered.");
         CallbackManager::resumeTimer(ecuMessagesSenderID);
+        if (VehicleData::getInstance().getDTCCount() > 0) {
+            DebugSerial::println("[DTC] Errors found, triggering cellular transmission...");
+            SIM800LManager::sendNonVolatileData();
+        }
     });
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_online_flag,setEcuStatustoOnline);
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_offline_flag,setEcuStatustoOffline);
@@ -170,6 +195,7 @@ void setup() {
     CallbackManager::addFlagWatcher(&SIM800LManager::esimConnectedFlag, setEsimStatustoConnected);
     CallbackManager::addFlagWatcher(&SIM800LManager::esimDisconnectedFlag, setEsimStatustoDisconnected);
     CallbackManager::addFlagWatcher(&SIM800LManager::esimWithoutSimFlag, setEsimStatustoWithoutSim);
+    CallbackManager::addFlagWatcher(&SIM800LManager::diagnoseModeReceivedFlag, checkAndTriggerDTCCollection);
 
     // Timers
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
