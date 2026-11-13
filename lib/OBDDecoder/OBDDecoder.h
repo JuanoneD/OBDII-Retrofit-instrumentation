@@ -9,9 +9,6 @@
 
 class OBDDecoder {
 public:
-    OBDDecoder();
-    ~OBDDecoder();
-
     static void decode(const String& rawResponse);
     static void decodeDTC(const String& rawResponse);
 

@@ -5,12 +5,6 @@
 int OBDDecoder::ecu_online_flag = 0;
 int OBDDecoder::ecu_offline_flag = 0;
 
-OBDDecoder::OBDDecoder() {
-}
-
-OBDDecoder::~OBDDecoder() {
-}
-
 void OBDDecoder::decode(const String& rawResponse) {
     String clean = rawResponse;
     clean.replace(" ", "");
@@ -41,8 +35,21 @@ void OBDDecoder::decode(const String& rawResponse) {
 
     int idx = clean.indexOf("41");
     if (idx == -1 || clean.length() < (unsigned int)(idx + 4)) {
-        DebugSerial::println("Offline response: " + rawResponse);
-        ecu_offline_flag = 1;
+        // Not a PID frame. Only "NO ANSWER" (spaces stripped -> "NOANSWER"),
+        // which the ELM327 returns when the ECU does not answer on the bus,
+        // actually means the ECU is offline. Everything else that is not a
+        // "41..." frame - "NO DATA" (ECU answered, PID unsupported),
+        // "ERROR" (adapter-internal), AT handshake echoes ("ATE0 OK",
+        // "READY", ...) right after connect - proves the adapter/ECU did
+        // respond. Flipping the ECU state on those used to make the display
+        // flicker between the dashboard and "Waiting for ECU..." on every
+        // transient adapter hiccup and on every (re)connect.
+        if (clean.indexOf("NOANSWER") != -1) {
+            DebugSerial::println("ECU no answer: " + rawResponse);
+            ecu_offline_flag = 1;
+        } else {
+            DebugSerial::println("Ignored non-PID response (ECU state unchanged): " + rawResponse);
+        }
         return;
     }
 
@@ -99,8 +106,8 @@ void OBDDecoder::decodeRPM(const String& data) {
 void OBDDecoder::decodeVehicleSpeed(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
-    int speed = a;
-    speed *= 1.07; // Adjust for speedometer calibration (7% increase)
+    // Vehicle-specific speedometer calibration (see config.h).
+    int speed = (int)(a * OBD_SPEEDOMETER_CALIBRATION);
     VehicleData::getInstance().setVehicleSpeed(speed);
     DebugSerial::println("Speed: " + String(speed) + " km/h");
 }

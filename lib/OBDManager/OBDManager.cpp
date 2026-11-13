@@ -31,13 +31,11 @@ BLEUUID OBDManager::charUUID_TX(OBDII_CHAR_UUID_TX);
 BLEUUID OBDManager::charUUID_RX(OBDII_CHAR_UUID_RX);
 String OBDManager::lastCommandSent = "";
 bool OBDManager::messageReceived = false;
-bool OBDManager::pendingSend = false;
-String OBDManager::pendingCommand = "";
 String OBDManager::lastResponse = "";
 unsigned long OBDManager::lastCommandSentTime = 0;
 unsigned long OBDManager::currentTimeout = DEFAULT_TIMEOUT;
 std::queue<String> OBDManager::commandQueue;
-int OBDManager::sendMessageFlag = 0;
+volatile bool OBDManager::connectInProgress = false;
 bool OBDManager::callbackInit = false;
 int OBDManager::obdConnectedFlag = 0;
 int OBDManager::obdDisconnectedFlag = 0;
@@ -46,9 +44,6 @@ int OBDManager::dtcCollectionEndedFlag = 0;
 bool OBDManager::dtcCollectionMode = false;
 RawMessageCallback OBDManager::rawMessageCallback = nullptr;
 
-OBDManager::OBDManager() {}
-OBDManager::~OBDManager() {}
-
 void OBDManager::onScanCompleted(BLEScanResults scanResults) {
     BLEUUID targetUUID(OBDII_SERVICE_UUID);
 
@@ -56,9 +51,11 @@ void OBDManager::onScanCompleted(BLEScanResults scanResults) {
     for (int i = 0; i < scanResults.getCount(); i++) {
         BLEAdvertisedDevice device = scanResults.getDevice(i);
 
-        bool nameMatch = device.getName().find(OBDII_NAME_PREFIX) != std::string::npos
-                       || device.getName().find(OBDII_NAME_PREFIX_2) != std::string::npos
-                       || device.getName().find(OBDII_NAME_PREFIX_3) != std::string::npos;
+        // getName() returns an Arduino String in this core version.
+        String name = device.getName();
+        bool nameMatch = name.indexOf(OBDII_NAME_PREFIX) != -1
+                       || name.indexOf(OBDII_NAME_PREFIX_2) != -1
+                       || name.indexOf(OBDII_NAME_PREFIX_3) != -1;
 
         bool serviceMatch = device.haveServiceUUID() && device.isAdvertisingService(targetUUID);
 
@@ -132,7 +129,41 @@ void OBDManager::scanAndConnect() {
     pBLEScan->start(OBDII_SCAN_TIME_SEC, onScanCompleted, false);
 }
 
+// Called from loop()-context (update()). Never blocks: the actual
+// connect + service discovery runs on its own FreeRTOS task.
 void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
+    if (connectInProgress) {
+        DebugSerial::println("OBD connect already in progress, ignoring new target.");
+        return;
+    }
+    if (pClient != nullptr && pClient->isConnected()) return;
+
+    connectInProgress = true;
+
+    // The task outlives this call, so it needs its own copy of the
+    // advertised device.
+    BLEAdvertisedDevice* deviceCopy = new BLEAdvertisedDevice(device);
+    if (xTaskCreatePinnedToCore(connectTaskTrampoline, "obdConnectTask", 12288,
+                                deviceCopy, 1, nullptr, 1) != pdPASS) {
+        delete deviceCopy;
+        connectInProgress = false;
+        DebugSerial::println("ERROR: Failed to create OBD connect task.");
+        obdDisconnectedFlag = 1;
+        return;
+    }
+}
+
+// Runs on the "obdConnectTask" FreeRTOS task. Safe to block here: the
+// loop() is no longer on the critical path of a BLE connection.
+void OBDManager::connectTaskTrampoline(void* param) {
+    BLEAdvertisedDevice* device = (BLEAdvertisedDevice*)param;
+    doConnectToDevice(*device);
+    delete device;
+    connectInProgress = false;
+    vTaskDelete(nullptr);
+}
+
+void OBDManager::doConnectToDevice(BLEAdvertisedDevice& device) {
     BLEAddress targetAddress = device.getAddress();
     DebugSerial::println("Connecting with device: " + String(targetAddress.toString().c_str()));
 
@@ -198,7 +229,6 @@ void OBDManager::connectToDevice(BLEAdvertisedDevice& device) {
     addCommandToQueue("ATSP0");
     addCommandToQueue("ATAT1");
     addCommandToQueue("ATL0");
-    sendMessageFlag = 1;
     DebugSerial::println("Connection and handshake initiated successfully");
     obdConnectedFlag = 1;
 }
@@ -277,7 +307,6 @@ void OBDManager::notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristi
         messageReceived = true;
         lastResponse = "";
         responsePending = true;
-        sendMessageFlag = 1;
     }
 
     portEXIT_CRITICAL(&stateMux);
@@ -299,6 +328,13 @@ void OBDManager::addCommandToQueue(const String& command) {
     if (canSendNow) {
         sendCommand(command);
         return;
+    }
+
+    // Bound the queue (see kMaxCommandQueue): drop the stale backlog and
+    // keep only the newest command so slow responses never accumulate a
+    // queue full of outdated PIDs.
+    if (commandQueue.size() >= kMaxCommandQueue) {
+        clearCommandQueue();
     }
     commandQueue.push(command);
 }

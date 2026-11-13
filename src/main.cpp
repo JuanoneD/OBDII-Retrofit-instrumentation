@@ -14,8 +14,9 @@ DisplayManager display;
 uint32_t startOBDIIConnectionID = 0;
 uint32_t ecuMessagesSenderID = 0;
 uint32_t fuelCalculatorID = 0;
-uint32_t displayUpdateID = 0;
 uint32_t cellularSenderID = 0;
+
+// (displayUpdateID removed: the display refresh timer never needed its ID.)
 
 int messageIndex = 0;
 
@@ -137,7 +138,9 @@ void setEsimStatustoConnected()
 
   VehicleData::getInstance().setEsimStatus(ESIMSTATUS::CONNECTED);
   DebugSerial::println("eSIM Connected!");
-  CallbackManager::resumeTimer(cellularSenderID);
+  // No resumeTimer here: the only path that pauses cellularSenderID is
+  // WITHOUT_SIM, and leaving that state always goes through DISCONNECTED
+  // first (checkSimStatus), which already resumes it.
 }
 
 void setEsimStatustoDisconnected()
@@ -203,7 +206,7 @@ void setup() {
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
     ecuMessagesSenderID = CallbackManager::addTimer(400, messageSendingCallback);
     fuelCalculatorID = CallbackManager::addTimer(500, []() { FuelCalculator::getInstance().update(); });
-    displayUpdateID  = CallbackManager::addTimer(500, []() { display.updateAll(); });
+    CallbackManager::addTimer(500, []() { display.updateAll(); });
     cellularSenderID = CallbackManager::addTimer(CELLULAR_SEND_INTERVAL_MS, []() { SIM800LManager::sendNonVolatileData(); });
 
     // Timers control

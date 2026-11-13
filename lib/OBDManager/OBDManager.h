@@ -17,14 +17,9 @@
  */
 class OBDManager {
 public:
-    OBDManager();
-    ~OBDManager();
-
     static void scanAndConnect();
     static void clearCommandQueue();
     static void addCommandToQueue(const String& command);
-    [[deprecated("Use DebugSerial directly")]]
-    static void setDebugSerial(Stream* serial = nullptr) { (void)serial; }
     static void setRawMessageCallback(RawMessageCallback callback);
     static bool startedCollectDTCsMode();
     static bool isDtcCollectionMode();
@@ -37,6 +32,18 @@ public:
     static int dtcCollectionEndedFlag;
 
 private:
+    // Max number of queued (unsent) commands. The 400ms polling timer in
+    // main.cpp adds up to 2 commands per tick while commands are drained one
+    // at a time; without a cap a slow/timing-out adapter would grow the queue
+    // indefinitely with stale PIDs. When full, the backlog is dropped so the
+    // freshest requests always go out.
+    static constexpr size_t kMaxCommandQueue = 4;
+
+    // True while the background connect task is running (see
+    // connectTaskTrampoline). Prevents spawning a second connect against a
+    // new scan result while the first is still in flight.
+    static volatile bool connectInProgress;
+
     static bool isScanning;
     static bool scanNeedsClear;
     static unsigned long scanStartTime;
@@ -45,7 +52,14 @@ private:
     static void onScanCompleted(BLEScanResults scanResults);
     static BLEClient* pClient;
     static RawMessageCallback rawMessageCallback;
+    // Non-blocking dispatcher: hands the connect off to a dedicated task.
     static void connectToDevice(BLEAdvertisedDevice& device);
+    // The actual (blocking) connect + service discovery, run on its own
+    // FreeRTOS task: BLEClient::connect() / getService() can take tens of
+    // seconds against a slow or vanishing adapter, and doing that inside
+    // loop() used to freeze the display, OBD polling and every other timer.
+    static void doConnectToDevice(BLEAdvertisedDevice& device);
+    static void connectTaskTrampoline(void* param);
     static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
     static void update();  // Process command queue and check timeouts
         
@@ -61,12 +75,9 @@ private:
     // State variables
     static String lastCommandSent;
     static bool messageReceived;
-    static bool pendingSend;
-    static String pendingCommand;
     static String lastResponse;
     static unsigned long lastCommandSentTime;
     static unsigned long currentTimeout;
-    static int sendMessageFlag;
     static bool callbackInit;
     
     static void sendCommand(String command);

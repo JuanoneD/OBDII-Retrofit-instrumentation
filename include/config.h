@@ -50,8 +50,6 @@ enum class ESIMSTATUS {
     CONNECTED
 };
 
-using SIMSTATUS = ESIMSTATUS;
-
 // -----------------------------------------------------------------------------
 // Cellular (SIM800L / eSIM) & Backend Configuration
 // -----------------------------------------------------------------------------
@@ -65,15 +63,12 @@ using SIMSTATUS = ESIMSTATUS;
     #include "secrets.h"
 #elif __has_include("secrets.example.h")
     #include "secrets.example.h"
+    #warning "config.h: include/secrets.h not found - falling back to secrets.example.h placeholder values. Copy secrets.example.h to secrets.h and fill in the real backend endpoint."
 #endif
 
 #ifndef BACKEND_HTTP_ENDPOINT
     #define BACKEND_HTTP_ENDPOINT     "http://127.0.0.1:5000"
 #endif
-
-#define HTTP_POST_ENDPOINT            BACKEND_HTTP_ENDPOINT
-#define SIM800_HTTP_ENDPOINT          BACKEND_HTTP_ENDPOINT
-#define CELLULAR_HTTP_ENDPOINT        BACKEND_HTTP_ENDPOINT
 
 // Public IPv4 of the Tailscale Funnel relay that fronts BACKEND_HTTP_ENDPOINT
 // (verify with: nslookup -type=A <funnel-host> 8.8.8.8). Used only by the
@@ -139,6 +134,10 @@ using SIMSTATUS = ESIMSTATUS;
 #define OBD_FUEL_TRIM_FACTOR            100.0f
 #define OBD_FUEL_TRIM_DIVISOR           128.0f
 #define OBD_FUEL_TRIM_OFFSET            100.0f
+
+// Vehicle-specific correction applied to the raw OBD speed (PID 0x0D)
+// to match the factory speedometer (7% higher than the raw value).
+#define OBD_SPEEDOMETER_CALIBRATION     1.07f
 
 #include <Arduino.h>
 #include <functional>

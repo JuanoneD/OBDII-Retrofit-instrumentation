@@ -25,16 +25,6 @@
  *   - DASHBOARD             : full telemetry + RPM bar
  */
 
-enum class DisplayField : uint8_t {
-    RPM,
-    GAS,
-    SPEED,
-    TEMP,
-    LOAD,
-    LTFT,
-    RPM_BAR
-};
-
 enum class DisplayMode : uint8_t {
     NONE,
     STATUS_CONNECTING,
@@ -56,14 +46,12 @@ public:
                int8_t sda = 21, int8_t scl = 22);
 
     void updateAll();
-    void updateField(DisplayField field);
     void invalidateCache();
 
 private:
     LiquidCrystal_I2C m_lcd;
     uint8_t m_cols;
     uint8_t m_rows;
-    uint8_t m_addr;
     bool m_initialized;
     DisplayMode m_currentMode;
 

@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include <vector>
 #include <Preferences.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "config.h"
 
 class VehicleData {
@@ -92,6 +94,14 @@ private:
     VehicleData& operator=(const VehicleData&) = delete;
 
     Preferences preferences;
+
+    // Serializes every public getter/setter. VehicleData is touched both by
+    // the loop task (FuelCalculator, display, OBD decoding) and by the
+    // SIM800L background send task (buildNonVolatileJson(), clearDTCs(),
+    // setEsimStatus()). NVS/Preferences is not thread-safe and concurrent
+    // flash writes could corrupt the partition, so all access goes through
+    // this mutex.
+    SemaphoreHandle_t m_mutex;
 
     // Status attributes
     OBDIISTATUS obdiiStatus;

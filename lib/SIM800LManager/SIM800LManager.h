@@ -3,7 +3,6 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
-#include <queue>
 #include <functional>
 #include <esp_mac.h>
 #include <ArduinoJson.h>
@@ -29,9 +28,6 @@
  */
 class SIM800LManager {
 public:
-    SIM800LManager();
-    ~SIM800LManager();
-
     // -------------------------------------------------------------------------
     // Hardware and eSIM Initialization
     // -------------------------------------------------------------------------
@@ -117,11 +113,8 @@ public:
     static String buildNonVolatileJson();
 
     // -------------------------------------------------------------------------
-    // AT Command Queue & Communication (OBDManager Pattern)
+    // AT Communication (OBDManager Pattern)
     // -------------------------------------------------------------------------
-    static void clearCommandQueue();
-    static void addCommandToQueue(const String& command);
-    static void sendCommand(const String& command);
     static String sendATCommand(const String& command,
                                 unsigned long timeoutMs = DEFAULT_TIMEOUT,
                                 const char* expectedResponse = "OK");
@@ -189,27 +182,33 @@ private:
     // must be called BEFORE disconnectGPRS(). See implementation for details.
     static void logConnectFailureDiagnostics(const String& url);
 
-    // Command queue & execution state
-    static std::queue<String> m_commandQueue;
-    static String m_lastCommandSent;
+    // Line accumulation for readIncoming()
     static String m_lastResponse;
-    static unsigned long m_lastCommandSentTime;
-    static unsigned long m_currentTimeout;
-    static bool m_messageReceived;
-    static unsigned long m_lastConnectionAttemptTime;
 
-    static String sendRawData(const String& data,
-                              unsigned long timeoutMs = 5000,
-                              const char* expectedResponse = "OK");
     static void readIncoming();
     static void applyServerResponse(const String& body);
 
-    // Throttled background recovery for permanent-looking failure states
-    // (hardware not responding / SIM not inserted). Called from update() on
-    // a cooldown so a modem that becomes responsive again, or a SIM that is
-    // inserted/activated later, can restore telemetry without a device
-    // restart.
+    // Server-response staging: the background send task only STASHES the
+    // HTTP response body here (fixed-size buffer + portMUX, no heap
+    // allocation inside the critical section); update() (loop context)
+    // picks it up and feeds applyServerResponse(). This keeps all
+    // VehicleData/NVS writes from backend sync on the loop task, where
+    // FuelCalculator also runs, instead of racing it from the send task.
+    static portMUX_TYPE m_pendingResponseMux;
+    static char m_pendingResponseBuffer[512];
+    static volatile bool m_pendingResponseReady;
+    static void stashServerResponse(const String& body);
+
+    // Background recovery for permanent-looking failure states (hardware
+    // not responding / SIM not inserted). tryRecover() itself is blocking
+    // (several AT round-trips, seconds of delays), so it must NOT run in
+    // loop() context: tryRecoverScheduled() (called from update()) only
+    // checks a 30s cooldown and spawns a short-lived task that does the
+    // actual probing.
     static void tryRecover();
+    static void tryRecoverScheduled();
+    static void recoverTaskTrampoline(void* param);
+    static volatile bool m_recoveryInProgress;
     static unsigned long m_lastRecoveryAttemptMs;
     static unsigned long m_baudRateForRecovery;
     static int8_t m_rxPinForRecovery;
@@ -227,8 +226,5 @@ private:
     // concurrently and corrupt/steal each other's bytes.
     static SemaphoreHandle_t m_serialMutex;
 };
-
-// Typedef alias for generic architecture references
-using CellularManager = SIM800LManager;
 
 #endif // SIM800L_MANAGER_H
