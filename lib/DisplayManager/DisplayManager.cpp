@@ -2,6 +2,7 @@
 #include "VehicleData.h"
 #include "DebugSerial.h"
 #include "SIM800LManager.h"
+#include "OBDManager.h"
 
 // Full-block character available on HD44780 character ROMs.
 static constexpr uint8_t LCD_BLOCK_CHAR = 0xFF;
@@ -26,7 +27,6 @@ bool DisplayManager::probeI2C(uint8_t addr) {
 
 bool DisplayManager::begin(uint8_t lcd_addr, uint8_t cols, uint8_t rows,
                             int8_t sda, int8_t scl) {
-    m_addr = lcd_addr;
     m_cols = cols;
     m_rows = rows;
 
@@ -191,6 +191,9 @@ void DisplayManager::enterMode(DisplayMode mode) {
         case DisplayMode::STATUS_WAIT_ECU:
             DebugSerial::println("Display: Waiting for ECU...");
             break;
+        case DisplayMode::STATUS_COLLECTING_DTC:
+            DebugSerial::println("Display: Collecting DTCs...");
+            break;
         case DisplayMode::DASHBOARD:
             DebugSerial::println("Display: Dashboard active.");
             break;
@@ -212,6 +215,12 @@ void DisplayManager::renderStatusConnecting() {
 void DisplayManager::renderStatusWaitEcu() {
     writeCenteredRow(1, "OBDII Connected");
     writeCenteredRow(2, "Waiting for ECU...");
+    renderCellularStatusLine();
+}
+
+void DisplayManager::renderStatusCollectingDtc() {
+    writeCenteredRow(1, "Diagnostic Mode");
+    writeCenteredRow(2, "Collecting DTCs...");
     renderCellularStatusLine();
 }
 
@@ -323,6 +332,8 @@ void DisplayManager::updateAll() {
         target = DisplayMode::STATUS_CONNECTING;
     } else if (ecu != ECUSTATUS::ONLINE) {
         target = DisplayMode::STATUS_WAIT_ECU;
+    } else if (OBDManager::isDtcCollectionMode()) {
+        target = DisplayMode::STATUS_COLLECTING_DTC;
     } else {
         target = DisplayMode::DASHBOARD;
     }
@@ -341,6 +352,10 @@ void DisplayManager::updateAll() {
             if (modeChanged) renderStatusWaitEcu();
             else renderCellularStatusLine();
             break;
+        case DisplayMode::STATUS_COLLECTING_DTC:
+            if (modeChanged) renderStatusCollectingDtc();
+            else renderCellularStatusLine();
+            break;
         case DisplayMode::DASHBOARD:
             renderDashboard();
             break;
@@ -349,36 +364,3 @@ void DisplayManager::updateAll() {
     }
 }
 
-void DisplayManager::updateField(DisplayField field) {
-    if (!m_initialized) return;
-    if (m_currentMode != DisplayMode::DASHBOARD) return;
-
-    VehicleData& v = VehicleData::getInstance();
-
-    switch (field) {
-        case DisplayField::RPM:
-            writeIfChanged(5, 0, formatRpm(v.getEngineRPM()), m_cacheRpm);
-            break;
-        case DisplayField::GAS: {
-            float cap = v.getTankCapacity();
-            float gasPct = (cap > 0.0f) ? (v.getGasolineLevel() / cap * 100.0f) : 0.0f;
-            writeIfChanged(16, 0, formatGas(gasPct), m_cacheGas);
-            break;
-        }
-        case DisplayField::SPEED:
-            writeIfChanged(0, 1, formatSpeed(v.getVehicleSpeed()), m_cacheSpeed);
-            break;
-        case DisplayField::TEMP:
-            writeIfChanged(15, 1, formatTemp(v.getCoolantTemp()), m_cacheTemp);
-            break;
-        case DisplayField::LOAD:
-            writeIfChanged(6, 2, formatLoad(v.getEngineLoad()), m_cacheLoad);
-            break;
-        case DisplayField::LTFT:
-            writeIfChanged(16, 2, formatLtft(v.getLongTermFuelTrim()), m_cacheLtft);
-            break;
-        case DisplayField::RPM_BAR:
-            renderRpmBar(v.getEngineRPM());
-            break;
-    }
-}

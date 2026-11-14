@@ -2,22 +2,22 @@
 #define OBD_DECODER_H
 
 #include <Arduino.h>
+#include <vector>
 #include "config.h"
 #include "DebugSerial.h"
 #include "VehicleData.h"
 
 class OBDDecoder {
 public:
-    OBDDecoder();
-    ~OBDDecoder();
-
     static void decode(const String& rawResponse);
+    static void decodeDTC(const String& rawResponse);
 
 // Signals
     static int ecu_online_flag;
     static int ecu_offline_flag;
 
 private:
+    static bool isMode03Response(const String& clean);
     static void decodeRPM(const String& data);
     static void decodeVehicleSpeed(const String& data);
     static void decodeCoolantTemp(const String& data);

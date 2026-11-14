@@ -96,40 +96,6 @@ public:
      */
     static bool resumeTimer(uint32_t timerId);
 
-    /**
-     * @brief Toggles the enabled state of a timer.
-     * @param timerId Timer ID.
-     * @return true if the timer was found.
-     */
-    static bool toggleTimer(uint32_t timerId);
-
-    /**
-     * @brief Removes and deallocates a timer from the dynamic collection.
-     * @param timerId Timer ID to remove.
-     * @return true if the timer was found and removed.
-     */
-    static bool removeTimer(uint32_t timerId);
-
-    /**
-     * @brief Modifies the interval of an existing timer and resets its base time.
-     * @param timerId Timer ID.
-     * @param newIntervalMs New interval in milliseconds.
-     * @return true if the timer was found.
-     */
-    static bool setTimerInterval(uint32_t timerId, unsigned long newIntervalMs);
-
-    /**
-     * @brief Resets the time reference of a timer (lastExecution = millis()).
-     * @param timerId Timer ID.
-     * @return true if the timer was found.
-     */
-    static bool resetTimer(uint32_t timerId);
-
-    /**
-     * @brief Removes all registered timers.
-     */
-    static void clearTimers();
-
     // =========================================================================
     // FLAG WATCHER SUBSYSTEM (POINTER COUNTER)
     // =========================================================================
@@ -147,39 +113,6 @@ public:
      */
     static uint32_t addFlagWatcher(int* flagPtr, CallbackFunction callback, bool enabled = true);
 
-    /**
-     * @brief Pauses a specific flag watcher.
-     * @param flagId ID returned by addFlagWatcher.
-     * @return true if the watcher was found and paused.
-     */
-    static bool pauseFlagWatcher(uint32_t flagId);
-
-    /**
-     * @brief Resumes a paused flag watcher.
-     * @param flagId ID returned by addFlagWatcher.
-     * @return true if the watcher was found and resumed.
-     */
-    static bool resumeFlagWatcher(uint32_t flagId);
-
-    /**
-     * @brief Removes and deallocates a flag watcher from the dynamic collection.
-     * @param flagId ID of the watcher to remove.
-     * @return true if the watcher was found and removed.
-     */
-    static bool removeFlagWatcher(uint32_t flagId);
-
-    /**
-     * @brief Gets the number of pending cycles for a flag watcher.
-     * @param flagId Flag watcher ID.
-     * @return int Number of pending cycles (-1 if invalid ID).
-     */
-    static int getPendingCycles(uint32_t flagId);
-
-    /**
-     * @brief Removes all registered flag watchers.
-     */
-    static void clearFlagWatchers();
-
     // =========================================================================
     // CORE PROCESSING ROUTINE (NON-BLOCKING)
     // =========================================================================
@@ -190,12 +123,6 @@ public:
      *        Completely non-blocking and single-core friendly.
      */
     static void update();
-
-    // =========================================================================
-    // QUERY / DIAGNOSTIC METHODS
-    // =========================================================================
-    static size_t getTimerCount() { return m_timers.size(); }
-    static size_t getFlagWatcherCount() { return m_flagWatchers.size(); }
 
 private:
     static std::vector<TimerItem> m_timers;            ///< Dynamic collection of software timers

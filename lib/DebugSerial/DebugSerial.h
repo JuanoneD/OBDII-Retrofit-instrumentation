@@ -23,7 +23,6 @@ public:
      * @param baudRate Baud rate for communication (default: SERIAL_BAUD_RATE from config.h).
      */
     static void begin(unsigned long baudRate = SERIAL_BAUD_RATE);
-    static void init(unsigned long baudRate = SERIAL_BAUD_RATE);
 
     /**
      * @brief Enables or disables serial debug output.

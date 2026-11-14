@@ -41,6 +41,20 @@ private:
     uint32_t lastUpdateMs;   // Timestamp of the last update() call
     bool initialized;
     bool wasLinkUp;          // Tracks OBD/ECU link state to detect reconnection
+
+    // Accumulated (unpersisted) deltas. NVS/flash is only written every
+    // PERSIST_INTERVAL_MS (or when the link drops), not on every 500ms tick:
+    // persisting fuel level + odometer + trip consumption three times per
+    // second would wear the ESP32 flash partition far faster than needed.
+    static constexpr uint32_t PERSIST_INTERVAL_MS = 30000;
+    double pendingFuelDelta = 0.0;      // negative (consumption)
+    double pendingDistanceDelta = 0.0;  // positive
+    double pendingTripDelta = 0.0;      // positive
+    uint32_t lastPersistMs = 0;
+
+    // Flushes the pending deltas into VehicleData (NVS). Called from
+    // update() on the persistence interval and on link drop.
+    void persistPending();
 };
 
 #endif // FUEL_CALCULATOR_H

@@ -3,7 +3,6 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
-#include <queue>
 #include <functional>
 #include <esp_mac.h>
 #include <ArduinoJson.h>
@@ -29,9 +28,6 @@
  */
 class SIM800LManager {
 public:
-    SIM800LManager();
-    ~SIM800LManager();
-
     // -------------------------------------------------------------------------
     // Hardware and eSIM Initialization
     // -------------------------------------------------------------------------
@@ -67,7 +63,27 @@ public:
      * @param responseBody Optional pointer to String to store server response body.
      * @return true if HTTP response status is 2xx, false otherwise.
      */
-    static bool sendHttpPost(const String& url, const String& jsonPayload, String* responseBody = nullptr);
+    static bool sendHttpPost(const String& url, const String& jsonPayload, String* responseBody = nullptr, int* statusCodeOut = nullptr);
+
+    /**
+     * @brief Sends stored Diagnostic Trouble Codes (DTCs) to backend via HTTP POST.
+     *        If HTTP response status is 200, the DTCs are cleared from VehicleData.
+     *        Endpoint: device/sendDTCs?idDevices=<mac>
+     *        Body format: {"DTCs": ["FFFF", "FFFF"]}
+     * @param baseUrl Base backend URL (default: BACKEND_HTTP_ENDPOINT)
+     * @return true if HTTP 200 OK was received and DTCs were cleared, false otherwise.
+     */
+    static bool sendDTCs(const String& baseUrl = BACKEND_HTTP_ENDPOINT);
+
+    /**
+     * @brief Formats stored DTCs into JSON body: {"DTCs": ["FFFF", "FFFF"]}
+     */
+    static String buildDTCJson();
+
+    /**
+     * @brief Formats WiFi STA MAC address as XX:XX:XX:XX:XX:XX.
+     */
+    static String getDeviceId();
 
     /**
      * @brief Builds a JSON payload containing all persistent/non-volatile data
@@ -97,11 +113,8 @@ public:
     static String buildNonVolatileJson();
 
     // -------------------------------------------------------------------------
-    // AT Command Queue & Communication (OBDManager Pattern)
+    // AT Communication (OBDManager Pattern)
     // -------------------------------------------------------------------------
-    static void clearCommandQueue();
-    static void addCommandToQueue(const String& command);
-    static void sendCommand(const String& command);
     static String sendATCommand(const String& command,
                                 unsigned long timeoutMs = DEFAULT_TIMEOUT,
                                 const char* expectedResponse = "OK");
@@ -125,6 +138,7 @@ public:
     static int esimConnectedFlag;
     static int esimDisconnectedFlag;
     static int esimWithoutSimFlag;
+    static int diagnoseModeReceivedFlag;
 
     // Convenience reference aliases
     static int& simConnectedFlag;
@@ -145,7 +159,7 @@ private:
 
     // Actual sendHttpPost() body, run while already holding m_serialMutex for
     // its entire duration (see sendHttpPost() in the .cpp for why).
-    static bool sendHttpPostLocked(const String& url, const String& jsonPayload, String* responseBody);
+    static bool sendHttpPostLocked(const String& url, const String& jsonPayload, String* responseBody, int* statusCodeOut = nullptr);
 
     // TinyGSM talks to the SIM800L purely as a "dumb modem" (AT+CIPSTART /
     // AT+CIPSEND raw TCP socket), and SSLClient performs the actual TLS
@@ -163,28 +177,38 @@ private:
                                    const String& jsonPayload, String* responseBody,
                                    int* statusCode);
 
-    // Command queue & execution state
-    static std::queue<String> m_commandQueue;
-    static String m_lastCommandSent;
-    static String m_lastResponse;
-    static unsigned long m_lastCommandSentTime;
-    static unsigned long m_currentTimeout;
-    static bool m_messageReceived;
-    static unsigned long m_lastConnectionAttemptTime;
+    // Connect-failure diagnostics (DNS vs TCP reachability vs transient).
+    // Runs via AT commands while the GPRS PDP context is still alive, i.e.
+    // must be called BEFORE disconnectGPRS(). See implementation for details.
+    static void logConnectFailureDiagnostics(const String& url);
 
-    static String sendRawData(const String& data,
-                              unsigned long timeoutMs = 5000,
-                              const char* expectedResponse = "OK");
+    // Line accumulation for readIncoming()
+    static String m_lastResponse;
+
     static void readIncoming();
-    static String getDeviceId();
     static void applyServerResponse(const String& body);
 
-    // Throttled background recovery for permanent-looking failure states
-    // (hardware not responding / SIM not inserted). Called from update() on
-    // a cooldown so a modem that becomes responsive again, or a SIM that is
-    // inserted/activated later, can restore telemetry without a device
-    // restart.
+    // Server-response staging: the background send task only STASHES the
+    // HTTP response body here (fixed-size buffer + portMUX, no heap
+    // allocation inside the critical section); update() (loop context)
+    // picks it up and feeds applyServerResponse(). This keeps all
+    // VehicleData/NVS writes from backend sync on the loop task, where
+    // FuelCalculator also runs, instead of racing it from the send task.
+    static portMUX_TYPE m_pendingResponseMux;
+    static char m_pendingResponseBuffer[512];
+    static volatile bool m_pendingResponseReady;
+    static void stashServerResponse(const String& body);
+
+    // Background recovery for permanent-looking failure states (hardware
+    // not responding / SIM not inserted). tryRecover() itself is blocking
+    // (several AT round-trips, seconds of delays), so it must NOT run in
+    // loop() context: tryRecoverScheduled() (called from update()) only
+    // checks a 30s cooldown and spawns a short-lived task that does the
+    // actual probing.
     static void tryRecover();
+    static void tryRecoverScheduled();
+    static void recoverTaskTrampoline(void* param);
+    static volatile bool m_recoveryInProgress;
     static unsigned long m_lastRecoveryAttemptMs;
     static unsigned long m_baudRateForRecovery;
     static int8_t m_rxPinForRecovery;
@@ -202,8 +226,5 @@ private:
     // concurrently and corrupt/steal each other's bytes.
     static SemaphoreHandle_t m_serialMutex;
 };
-
-// Typedef alias for generic architecture references
-using CellularManager = SIM800LManager;
 
 #endif // SIM800L_MANAGER_H

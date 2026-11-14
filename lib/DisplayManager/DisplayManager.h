@@ -18,26 +18,18 @@
  *     I2C writes are skipped when the new value matches the cache.
  *
  * Display modes (chosen automatically by updateAll() based on
- * VehicleData status):
- *   - STATUS_CONNECTING : "Connecting OBDII..."
- *   - STATUS_WAIT_ECU   : "OBDII Connected" / "Waiting for ECU..."
- *   - DASHBOARD         : full telemetry + RPM bar
+ * VehicleData and OBDManager status):
+ *   - STATUS_CONNECTING     : "Connecting OBDII..."
+ *   - STATUS_WAIT_ECU       : "OBDII Connected" / "Waiting for ECU..."
+ *   - STATUS_COLLECTING_DTC : "Diagnostic Mode" / "Collecting DTCs..."
+ *   - DASHBOARD             : full telemetry + RPM bar
  */
-
-enum class DisplayField : uint8_t {
-    RPM,
-    GAS,
-    SPEED,
-    TEMP,
-    LOAD,
-    LTFT,
-    RPM_BAR
-};
 
 enum class DisplayMode : uint8_t {
     NONE,
     STATUS_CONNECTING,
     STATUS_WAIT_ECU,
+    STATUS_COLLECTING_DTC,
     DASHBOARD
 };
 
@@ -54,14 +46,12 @@ public:
                int8_t sda = 21, int8_t scl = 22);
 
     void updateAll();
-    void updateField(DisplayField field);
     void invalidateCache();
 
 private:
     LiquidCrystal_I2C m_lcd;
     uint8_t m_cols;
     uint8_t m_rows;
-    uint8_t m_addr;
     bool m_initialized;
     DisplayMode m_currentMode;
 
@@ -78,6 +68,7 @@ private:
 
     void renderStatusConnecting();
     void renderStatusWaitEcu();
+    void renderStatusCollectingDtc();
     void renderDashboard();
     void renderRpmBar(int rpm);
     void renderCellularStatusLine();
