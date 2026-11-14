@@ -3,6 +3,7 @@
 #include "DebugSerial.h"
 #include "SIM800LManager.h"
 #include "OBDManager.h"
+#include "ErrorDetector.h"
 
 // Full-block character available on HD44780 character ROMs.
 static constexpr uint8_t LCD_BLOCK_CHAR = 0xFF;
@@ -66,6 +67,7 @@ void DisplayManager::invalidateCache() {
     m_cacheLoad         = "";
     m_cacheLtft         = "";
     m_cacheCellStatus   = "";
+    m_cacheErrorTitle   = "";
     m_cacheRpmBarBlocks = -1;
 }
 
@@ -145,8 +147,10 @@ String DisplayManager::formatLtft(float trimPct) {
     int val = (int)(trimPct + (trimPct >= 0 ? 0.5f : -0.5f));
     
     char buf[8];
-    // Explicitly format with sign (+ or -) followed by the number and '%'
-    snprintf(buf, sizeof(buf), "%+d%% ", val);
+    // Explicitly format with sign (+ or -) followed by the number and '%'.
+    // No trailing space: written at col 16 of a 20-col line, a two-digit
+    // value with the trailing space would write one char past the row.
+    snprintf(buf, sizeof(buf), "%+d%%", val);
     return String(buf);
 }
 
@@ -292,8 +296,28 @@ void DisplayManager::renderDashboard() {
     writeIfChanged(5,  2, formatLoad(v.getEngineLoad()),        m_cacheLoad);
     writeIfChanged(16, 2, formatLtft(v.getLongTermFuelTrim()),  m_cacheLtft);
 
-    // Row 3: RPM bar (untouched)
-    renderRpmBar(v.getEngineRPM());
+    // Row 3: RPM bar, unless a real-time system error is active - then
+    // the line is taken over by the error title (priority: lowest id).
+    // When the error clears, force a bar redraw by invalidating its cache.
+    const char* errorTitle = ErrorDetector::getActiveErrorTitle();
+    if (errorTitle != nullptr) {
+        // "! " (2 chars) + title must fit in m_cols: truncate the title to
+        // m_cols - 2 before prefixing, or the last 2 chars get silently
+        // chopped by padRight().
+        String t = String(errorTitle);
+        if (t.length() > m_cols - 2) t = t.substring(0, m_cols - 2);
+        String line = "! " + t;
+        writeIfChanged(0, 3, padRight(line, m_cols), m_cacheErrorTitle);
+        if (m_cacheRpmBarBlocks != -1) m_cacheRpmBarBlocks = -1;
+    } else {
+        if (m_cacheErrorTitle.length() != 0) {
+            // Just left the error overlay: erase residual characters and
+            // let renderRpmBar() repaint the full line.
+            m_cacheErrorTitle = "";
+            m_cacheRpmBarBlocks = -1;
+        }
+        renderRpmBar(v.getEngineRPM());
+    }
 }
 
 void DisplayManager::renderRpmBar(int rpm) {

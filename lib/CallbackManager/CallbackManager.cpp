@@ -48,8 +48,14 @@ bool CallbackManager::pauseTimer(uint32_t timerId) {
 bool CallbackManager::resumeTimer(uint32_t timerId) {
     for (auto& timer : m_timers) {
         if (timer.id == timerId) {
-            timer.enabled = true;
-            timer.lastExecution = millis(); // Reset time base upon resuming
+            // Only reset the time base when actually transitioning from
+            // paused -> running. Resuming an already-running timer used to
+            // reset its phase, which delayed/shifted its next fire point
+            // depending on when an unrelated code path called resumeTimer().
+            if (!timer.enabled) {
+                timer.enabled = true;
+                timer.lastExecution = millis();
+            }
             return true;
         }
     }

@@ -14,9 +14,32 @@ portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Holds a completed response until update() (loop-context) picks it up,
 // so decode() and its String parsing / Serial prints never run on the
-// BLE task itself.
+// BLE task itself. Fixed buffer + flag: no heap allocation ever happens
+// inside the portENTER_CRITICAL sections that protect this handoff.
 volatile bool responsePending = false;
-String pendingResponseText;
+char pendingResponseBuffer[2048] = {0};
+
+// Guards commandQueue. A FreeRTOS mutex (NOT a portMUX spinlock) is used
+// on purpose: enqueueing can heap-allocate (std::queue::push), and doing
+// that inside portENTER_CRITICAL (interrupts disabled on both cores) is
+// illegal on ESP32 and can trip the interrupt watchdog / corrupt the heap.
+// The queue is mutated by both loop()-context (timers in main.cpp, update())
+// and the obdConnectTask (startedCollectDTCsMode/handshake), so it needs a
+// real lock.
+SemaphoreHandle_t commandQueueMux = nullptr;
+
+inline void ensureCommandQueueMux() {
+    if (commandQueueMux == nullptr) {
+        commandQueueMux = xSemaphoreCreateMutex();
+    }
+}
+
+// BLE-task-private response accumulator (see notifyCallback). Only the
+// Bluedroid task touches it; the loop task signals a reset through
+// notifyResetPending instead of writing it directly.
+volatile bool notifyResetPending = false;
+String s_accum;
+constexpr size_t kMaxAccumulatorLength = 2048;
 }
 
 bool OBDManager::isScanning = false;
@@ -104,6 +127,7 @@ void OBDManager::onScanCompleted(BLEScanResults scanResults) {
 void OBDManager::scanAndConnect() {
     if (!callbackInit) {
         BLEDevice::init("");
+        ensureCommandQueueMux(); // created in loop context before any task
         CallbackManager::addTimer(25, OBDManager::update);
         callbackInit = true;
     }
@@ -164,6 +188,11 @@ void OBDManager::connectTaskTrampoline(void* param) {
 }
 
 void OBDManager::doConnectToDevice(BLEAdvertisedDevice& device) {
+    // Invalidate characteristics from any previous (dead) connection up
+    // front, so a failure below never leaves stale pointers behind.
+    pCharTX = nullptr;
+    pCharRX = nullptr;
+
     BLEAddress targetAddress = device.getAddress();
     DebugSerial::println("Connecting with device: " + String(targetAddress.toString().c_str()));
 
@@ -217,9 +246,9 @@ void OBDManager::doConnectToDevice(BLEAdvertisedDevice& device) {
     portENTER_CRITICAL(&stateMux);
     messageReceived = true;
     lastCommandSent = "";
-    lastResponse = "";
     responsePending = false;
     portEXIT_CRITICAL(&stateMux);
+    notifyResetPending = true; // BLE task clears its accumulator on next notify
 
     clearCommandQueue();
 
@@ -257,86 +286,135 @@ void OBDManager::sendCommand(String command) {
 
     portENTER_CRITICAL(&stateMux);
     lastCommandSent = trimmedCommand;
-    lastResponse = "";
     messageReceived = false;
     lastCommandSentTime = millis();
     currentTimeout = timeoutToUse;
     portEXIT_CRITICAL(&stateMux);
+    notifyResetPending = true; // BLE task clears its accumulator on next notify
 
     unsigned long writeStart = millis();
-    
+
     // Perform write without capturing return directly into a boolean variable
     pCharTX->writeValue((uint8_t*)command.c_str(), command.length(), true);
-    bool ok = true; // Since modern writeValue does not return bool in its current version, assume successful ATT transmission or handle via response/timeout flow.
-    
+
     unsigned long writeDuration = millis() - writeStart;
 
     DebugSerial::println("Sending: " + trimmedCommand +
                           " | write-with-response ok=1" +
                           " tomou " + String(writeDuration) + "ms");
-                          
-    if (!ok) {
-        // Write failed at the ATT level - treat as a timeout so the state
-        // machine does not get stuck waiting for a response that will never arrive.
-        portENTER_CRITICAL(&stateMux);
-        messageReceived = true;
-        portEXIT_CRITICAL(&stateMux);
-    }
 }
 
 // Runs on the Bluedroid BLE task, NOT on loop(). Keep this fast: only
 // append bytes and, once a full response is detected, stash it for
 // update() to process. No String parsing beyond terminator detection,
 // no calls to rawMessageCallback, no prints here.
+//
+// Heap-safety: all String appends happen OUTSIDE the portENTER_CRITICAL
+// section (allocating with interrupts disabled is illegal on ESP32).
+// `s_accum` is a BLE-task-private accumulator, handed off under the
+// spinlock only when a complete response ('>') is detected. The loop task
+// never touches it; instead it sets notifyResetPending (under stateMux)
+// whenever a new command is sent, and the BLE task clears the accumulator
+// at the top of the next notify.
 void OBDManager::notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     portENTER_CRITICAL(&stateMux);
+    bool skip = messageReceived;
+    bool reset = notifyResetPending;
+    notifyResetPending = false;
+    portEXIT_CRITICAL(&stateMux);
 
-    if (messageReceived) {
-        portEXIT_CRITICAL(&stateMux);
+    if (skip) return;
+    if (reset) s_accum = "";
+
+    for (size_t i = 0; i < length; i++) {
+        s_accum += (char)pData[i];
+    }
+
+    // Runaway guard: a response with no '>' terminator must never grow
+    // unbounded on the BLE task.
+    if (s_accum.length() > kMaxAccumulatorLength) {
+        s_accum = "";
         return;
     }
 
-    for (size_t i = 0; i < length; i++) {
-        lastResponse += (char)pData[i];
+    if (s_accum.indexOf('>') != -1) {
+        portENTER_CRITICAL(&stateMux);
+        if (!messageReceived) {
+            // memcpy only inside the critical section (no heap alloc).
+            size_t copyLen = s_accum.length();
+            if (copyLen >= sizeof(pendingResponseBuffer)) {
+                copyLen = sizeof(pendingResponseBuffer) - 1;
+            }
+            memcpy(pendingResponseBuffer, s_accum.c_str(), copyLen);
+            pendingResponseBuffer[copyLen] = '\0';
+            messageReceived = true;
+            responsePending = true;
+        }
+        portEXIT_CRITICAL(&stateMux);
+        s_accum = "";
     }
+}
 
-    if (lastResponse.indexOf('>') != -1) {
-        pendingResponseText = lastResponse;
-        pendingResponseText.trim();
-
-        messageReceived = true;
-        lastResponse = "";
-        responsePending = true;
+// Trims \r, spaces and '>' prompt chars from the staged buffer (equivalent
+// to the old pendingResponseText.trim()), called in loop context.
+static String takePendingResponse() {
+    char localBuf[sizeof(pendingResponseBuffer)];
+    bool hasResponse = false;
+    portENTER_CRITICAL(&stateMux);
+    if (responsePending) {
+        responsePending = false;
+        memcpy(localBuf, pendingResponseBuffer, sizeof(localBuf));
+        hasResponse = true;
     }
-
     portEXIT_CRITICAL(&stateMux);
+    if (!hasResponse) return String("");
+    String out(localBuf);
+    out.trim();
+    return out;
 }
 
 void OBDManager::clearCommandQueue() {
-    while (!commandQueue.empty()) commandQueue.pop();
+    ensureCommandQueueMux();
+    if (xSemaphoreTake(commandQueueMux, portMAX_DELAY) == pdTRUE) {
+        while (!commandQueue.empty()) commandQueue.pop();
+        xSemaphoreGive(commandQueueMux);
+    }
 }
 
+// Enqueue-only: never sends directly. update() (loop context) is the single
+// place that dispatches queued commands, so no cross-task sendCommand()
+// happens anymore. Safe to call from any task.
 void OBDManager::addCommandToQueue(const String& command) {
     if (dtcCollectionMode && command != OBD_CMD_REQUEST_DTCS) {
         return;
     }
-    bool canSendNow;
-    portENTER_CRITICAL(&stateMux);
-    canSendNow = commandQueue.empty() && messageReceived;
-    portEXIT_CRITICAL(&stateMux);
-
-    if (canSendNow) {
-        sendCommand(command);
-        return;
-    }
+    ensureCommandQueueMux();
+    if (xSemaphoreTake(commandQueueMux, portMAX_DELAY) != pdTRUE) return;
 
     // Bound the queue (see kMaxCommandQueue): drop the stale backlog and
     // keep only the newest command so slow responses never accumulate a
-    // queue full of outdated PIDs.
+    // queue full of outdated PIDs. A queued DTC request is protected: a
+    // backlog must never evict the "03" request that started DTC collection.
     if (commandQueue.size() >= kMaxCommandQueue) {
-        clearCommandQueue();
+        bool hasDtcRequest = false;
+        std::queue<String> scan = commandQueue;
+        while (!scan.empty()) {
+            if (scan.front() == OBD_CMD_REQUEST_DTCS) {
+                hasDtcRequest = true;
+                break;
+            }
+            scan.pop();
+        }
+        if (hasDtcRequest) {
+            // Stale PID backlog in front of a pending DTC request: drop the
+            // new (stale) command instead of the request.
+            xSemaphoreGive(commandQueueMux);
+            return;
+        }
+        while (!commandQueue.empty()) commandQueue.pop();
     }
     commandQueue.push(command);
+    xSemaphoreGive(commandQueueMux);
 }
 
 void OBDManager::update() {
@@ -373,20 +451,10 @@ void OBDManager::update() {
 
     // Process any response the BLE task stashed for us. decode() and its
     // Serial prints happen here, safely off the BLE task.
-    bool hasResponse = false;
-    String responseToProcess;
-    portENTER_CRITICAL(&stateMux);
-    if (responsePending) {
-        hasResponse = true;
-        responseToProcess = pendingResponseText;
-        responsePending = false;
-    }
-    portEXIT_CRITICAL(&stateMux);
+    String responseToProcess = takePendingResponse();
 
-    if (hasResponse) {
-        if (responseToProcess.length() > 0) {
-            DebugSerial::println("Message Received: " + responseToProcess);
-        }
+    if (responseToProcess.length() > 0) {
+        DebugSerial::println("Message Received: " + responseToProcess);
         if (rawMessageCallback) {
             rawMessageCallback(responseToProcess);
         }
@@ -397,27 +465,35 @@ void OBDManager::update() {
     canSendNext = messageReceived;
     portEXIT_CRITICAL(&stateMux);
 
-    if (canSendNext && !commandQueue.empty()) {
-        String next = commandQueue.front();
-        commandQueue.pop();
-        sendCommand(next);
+    if (canSendNext && commandQueueMux != nullptr &&
+        xSemaphoreTake(commandQueueMux, 0) == pdTRUE) {
+        String next;
+        if (!commandQueue.empty()) {
+            next = commandQueue.front();
+            commandQueue.pop();
+        }
+        xSemaphoreGive(commandQueueMux);
+        if (next.length() > 0) {
+            sendCommand(next);
+        }
     }
 
     bool timedOut = false;
-    String timedOutCommand;
     portENTER_CRITICAL(&stateMux);
     if (!messageReceived && lastCommandSentTime > 0) {
-        unsigned long elapsed = millis() - lastCommandSentTime;
-        if (elapsed >= currentTimeout) {
+        if (millis() - lastCommandSentTime >= currentTimeout) {
             timedOut = true;
-            timedOutCommand = lastCommandSent;
             messageReceived = true;
-            lastResponse = "";
         }
     }
     portEXIT_CRITICAL(&stateMux);
 
     if (timedOut) {
+        // lastCommandSent is only ever written from loop context
+        // (sendCommand(), called exclusively from update()), so copying it
+        // here — OUTSIDE the spinlock — is race-free; the copy used to be
+        // made inside portENTER_CRITICAL (heap alloc with interrupts off).
+        String timedOutCommand = lastCommandSent;
         DebugSerial::println("ERROR: Timeout waiting for response to: " + timedOutCommand);
         if (dtcCollectionMode && timedOutCommand.startsWith(OBD_CMD_REQUEST_DTCS)) {
             DebugSerial::println("[OBDManager] DTC collection request timed out.");
