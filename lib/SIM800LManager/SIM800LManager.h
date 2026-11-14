@@ -11,6 +11,8 @@
 #include <freertos/semphr.h>
 #include <TinyGsmClient.h>
 #include <SSLClient.h>
+#include <vector>
+#include <cstddef>
 #include "config.h"
 #include "CallbackManager.h"
 #include "DebugSerial.h"
@@ -68,17 +70,49 @@ public:
     /**
      * @brief Sends stored Diagnostic Trouble Codes (DTCs) to backend via HTTP POST.
      *        If HTTP response status is 200, the DTCs are cleared from VehicleData.
-     *        Endpoint: device/sendDTCs?idDevices=<mac>
-     *        Body format: {"DTCs": ["FFFF", "FFFF"]}
+     *        Endpoint: devices/sendDTCs?idDevice=<mac>
+     *        Body format: {"dtcs": ["FFFF", "FFFF"]}
      * @param baseUrl Base backend URL (default: BACKEND_HTTP_ENDPOINT)
      * @return true if HTTP 200 OK was received and DTCs were cleared, false otherwise.
      */
     static bool sendDTCs(const String& baseUrl = BACKEND_HTTP_ENDPOINT);
 
     /**
-     * @brief Formats stored DTCs into JSON body: {"DTCs": ["FFFF", "FFFF"]}
+     * @brief Sends all queued real-time detected errors (ErrorDetector) to the
+     *        backend via HTTP POST, one request per error.
+     *        Endpoint: devices/<idEsp>/addDetectError
+     *        Body format: {"title": "...", "description": "..."}
+     *        Errors whose POST does not return HTTP 2xx stay queued for a
+     *        later retry (the next send task run).
+     * @param baseUrl Base backend URL (default: BACKEND_HTTP_ENDPOINT)
+     * @return true if the queue is empty at the end (all sent / nothing to send).
+     */
+    static bool sendDetectedErrors(const String& baseUrl = BACKEND_HTTP_ENDPOINT);
+
+    /**
+     * @brief Escapes a string for embedding inside a JSON string literal.
+     */
+    static String escapeJsonString(const String& value);
+
+    /**
+     * @brief Formats stored DTCs into JSON body: {"dtcs": ["FFFF", "FFFF"]}
      */
     static String buildDTCJson();
+
+    /**
+     * @brief Queues a real-time system error (ErrorDetector catalog) for
+     *        transmission. The payload is pre-built as JSON here (loop
+     *        context) and flushed by the background cellular send task
+     *        (sendTaskTrampoline), so no HTTP work ever happens inline.
+     *        Endpoint: device/sendSystemError?idDevices=<mac>
+     *        Body: {"id": <n>, "title": "...", "description": "..."}
+     */
+    static void queueSystemError(uint8_t id, const String& title, const String& description);
+
+    /**
+     * @brief Number of queued system-error payloads waiting for transmission.
+     */
+    static size_t pendingSystemErrorCount();
 
     /**
      * @brief Formats WiFi STA MAC address as XX:XX:XX:XX:XX:XX.
@@ -218,6 +252,17 @@ private:
     static volatile bool m_sendInProgress;
     static String m_sendTaskUrl;
     static void sendTaskTrampoline(void* param);
+
+    // Pending real-time system errors queued by ErrorDetector::activate()
+    // via queueSystemError(). Payloads are pre-built JSON strings so the
+    // flush (running on the send task) does no JSON escaping itself.
+    // Guarded by a mutex (m_pendingErrorsMux, created in begin()): queueSystemError()
+    // runs on the loop task while flushPendingSystemErrors() runs on the send
+    // task. A mutex (not a spinlock) is used because push_back() may allocate
+    // heap, which must never happen with interrupts disabled.
+    static std::vector<String> m_pendingSystemErrors;
+    static SemaphoreHandle_t m_pendingErrorsMux;
+    static void flushPendingSystemErrors(const String& baseUrl);
 
     // Serializes access to m_serial (and the blocking AT-command exchange)
     // between the periodic readIncoming()/update() (loop()-context, via

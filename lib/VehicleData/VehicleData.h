@@ -8,6 +8,14 @@
 #include <freertos/semphr.h>
 #include "config.h"
 
+/// A real-time system error detected from OBD-II PID analysis (see
+/// ErrorDetector). Queued in VehicleData so both the loop task (producer) and
+/// the SIM800L background send task (consumer) share one mutex-protected store.
+struct DetectedError {
+    String title;
+    String description;
+};
+
 class VehicleData {
 public:
     // Singleton access
@@ -85,6 +93,17 @@ public:
     void clearDTCs();
     int getDTCCount() const;
 
+    // --- Real-time detected system errors (queue + last-error for display) ---
+    // Producer: ErrorDetector (loop task). Consumer: SIM800L send task.
+    void pushDetectedError(const String& title, const String& description);
+    bool popDetectedError(DetectedError& out);
+    // Looks at the front of the queue WITHOUT removing it, so a consumer can
+    // attempt a transmission and only pop once it is confirmed delivered.
+    bool peekDetectedError(DetectedError& out) const;
+    int getDetectedErrorCount() const;
+    String getLastDetectedErrorTitle() const;
+    unsigned long getLastDetectedErrorMs() const;
+
 private:
     VehicleData();
     ~VehicleData();
@@ -119,6 +138,9 @@ private:
     float longTermFuelTrim;
     float mapPressure;
     std::vector<String> dtcList;
+    std::vector<DetectedError> detectedErrors;   // FIFO of errors awaiting POST
+    String lastDetectedErrorTitle;               // shown on the LCD
+    unsigned long lastDetectedErrorMs;           // millis() of last detection
     // when the diagnosic mode is enabled, this flag is to marker if the DTCs have been requested; Is not persisted because the DTCs request must be done every time the system is started
     int requestDTCsOnStarted; 
 

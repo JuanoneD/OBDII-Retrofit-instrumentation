@@ -62,6 +62,7 @@ private:
     String m_cacheLoad;
     String m_cacheLtft;
     String m_cacheCellStatus;
+    String m_cacheErrorTitle;
     int    m_cacheRpmBarBlocks;
 
     bool probeI2C(uint8_t addr);

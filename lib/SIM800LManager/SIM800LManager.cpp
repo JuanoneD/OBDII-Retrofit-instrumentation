@@ -35,6 +35,8 @@ String SIM800LManager::m_sendTaskUrl = "";
 SemaphoreHandle_t SIM800LManager::m_serialMutex = nullptr;
 
 portMUX_TYPE SIM800LManager::m_pendingResponseMux = portMUX_INITIALIZER_UNLOCKED;
+std::vector<String> SIM800LManager::m_pendingSystemErrors;
+SemaphoreHandle_t SIM800LManager::m_pendingErrorsMux = nullptr;
 char SIM800LManager::m_pendingResponseBuffer[512] = {0};
 volatile bool SIM800LManager::m_pendingResponseReady = false;
 
@@ -203,6 +205,12 @@ void SIM800LManager::begin(unsigned long baudRate, int8_t rxPin, int8_t txPin, i
         // sendHttpPost()). A plain mutex would deadlock the owning task on
         // the inner sendATCommand() call in that scenario.
         m_serialMutex = xSemaphoreCreateRecursiveMutex();
+    }
+
+    if (m_pendingErrorsMux == nullptr) {
+        // Guards the pending system-error queue (created here, before any
+        // send task starts, so no lazy-init race).
+        m_pendingErrorsMux = xSemaphoreCreateMutex();
     }
 
     DebugSerial::println("[SIM800L] Initializing hardware on RX=" + String(rxPin) +
@@ -534,6 +542,13 @@ void SIM800LManager::sendTaskTrampoline(void* param) {
         if (VehicleData::getInstance().getDTCCount() > 0) {
             sendDTCs(url);
         }
+
+        // Drain the real-time detected-error queue (ErrorDetector), if any
+        sendDetectedErrors(url);
+
+        // Finally, flush any real-time system errors queued by the
+        // ErrorDetector since the last send task run.
+        flushPendingSystemErrors(url);
     }
 
     m_sendInProgress = false;
@@ -654,15 +669,87 @@ void SIM800LManager::applyServerResponse(const String& body) {
 
 String SIM800LManager::buildDTCJson() {
     const std::vector<String>& dtcs = VehicleData::getInstance().getDTCs();
-    String json = "{\"DTCs\": [";
+    String json = "{\"dtcs\": [";
     for (size_t i = 0; i < dtcs.size(); i++) {
-        json += "\"" + dtcs[i] + "\"";
+        json += "\"" + escapeJsonString(dtcs[i]) + "\"";
         if (i + 1 < dtcs.size()) {
             json += ", ";
         }
     }
     json += "]}";
     return json;
+}
+
+void SIM800LManager::queueSystemError(uint8_t id, const String& title, const String& description) {
+    // Escape via ArduinoJson so titles/descriptions with quotes or
+    // special characters produce valid JSON.
+    JsonDocument doc;
+    doc["id"] = id;
+    doc["title"] = title;
+    doc["description"] = description;
+
+    String json;
+    serializeJson(doc, json);
+
+    // Heap allocation inside push_back() must never run with interrupts
+    // disabled, so a normal mutex guards the queue (never used from ISR).
+    if (m_pendingErrorsMux != nullptr) {
+        xSemaphoreTake(m_pendingErrorsMux, portMAX_DELAY);
+    }
+    m_pendingSystemErrors.push_back(json);
+    if (m_pendingErrorsMux != nullptr) {
+        xSemaphoreGive(m_pendingErrorsMux);
+    }
+    DebugSerial::println("[SIM800L] System error #" + String(id) +
+                         " queued (" + String(pendingSystemErrorCount()) + " pending).");
+}
+
+size_t SIM800LManager::pendingSystemErrorCount() {
+    if (m_pendingErrorsMux != nullptr) {
+        xSemaphoreTake(m_pendingErrorsMux, portMAX_DELAY);
+    }
+    size_t n = m_pendingSystemErrors.size();
+    if (m_pendingErrorsMux != nullptr) {
+        xSemaphoreGive(m_pendingErrorsMux);
+    }
+    return n;
+}
+
+// Runs ONLY on the background cellular send task (sendTaskTrampoline):
+// it performs blocking HTTP POSTs, which must never happen in loop()
+// context. The serial mutex held by sendHttpPost() also serializes
+// these against the non-volatile data / DTC posts in the same task.
+void SIM800LManager::flushPendingSystemErrors(const String& baseUrl) {
+    // Move the queue out under the mutex so new errors queued while
+    // we transmit are kept for the next flush instead of being lost.
+    std::vector<String> batch;
+    if (m_pendingErrorsMux != nullptr) {
+        xSemaphoreTake(m_pendingErrorsMux, portMAX_DELAY);
+    }
+    batch.swap(m_pendingSystemErrors);
+    if (m_pendingErrorsMux != nullptr) {
+        xSemaphoreGive(m_pendingErrorsMux);
+    }
+
+    if (batch.empty()) return;
+
+    String url = baseUrl;
+    if (!url.endsWith("/")) url += "/";
+    url += "device/sendSystemError?idDevices=" + getDeviceId();
+
+    DebugSerial::println("[SIM800L] Flushing " + String(batch.size()) + " queued system error(s).");
+
+    for (size_t i = 0; i < batch.size(); i++) {
+        String responseBody;
+        int statusCode = 0;
+        bool ok = sendHttpPost(url, batch[i], &responseBody, &statusCode);
+        if (ok && statusCode == 200) {
+            DebugSerial::println("[SIM800L] System error POST sent (HTTP " + String(statusCode) + ").");
+        } else {
+            DebugSerial::println("[SIM800L] ERROR: system error POST failed (HTTP " +
+                                 String(statusCode) + "). Dropping payload.");
+        }
+    }
 }
 
 bool SIM800LManager::sendDTCs(const String& baseUrl) {
@@ -673,7 +760,7 @@ bool SIM800LManager::sendDTCs(const String& baseUrl) {
 
     String url = baseUrl;
     if (!url.endsWith("/")) url += "/";
-    url += "device/sendDTCs?idDevices=" + getDeviceId();
+    url += "devices/sendDTCs?idDevice=" + getDeviceId();
 
     DebugSerial::println("[SIM800L] Sending DTCs to: " + url);
     String payload = buildDTCJson();
@@ -690,6 +777,70 @@ bool SIM800LManager::sendDTCs(const String& baseUrl) {
         DebugSerial::println("[SIM800L] ERROR: Failed to send DTCs. Status: " + String(statusCode) + ". Preserving DTCs.");
         return false;
     }
+}
+
+String SIM800LManager::escapeJsonString(const String& value) {
+    String out;
+    out.reserve(value.length() + 8);
+    for (size_t i = 0; i < value.length(); i++) {
+        char c = value.charAt(i);
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if ((unsigned char)c < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04X", c);
+                    out += buf;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+bool SIM800LManager::sendDetectedErrors(const String& baseUrl) {
+    VehicleData& data = VehicleData::getInstance();
+    bool allSent = true;
+
+    // One POST per error, as the endpoint expects a single {title, description}
+    // body. The front error is only popped AFTER a confirmed 2xx response, so
+    // a failed POST leaves it (and everything behind it) queued and retried on
+    // the next send task run.
+    DetectedError err;
+    while (data.peekDetectedError(err)) {
+        String url = baseUrl;
+        if (!url.endsWith("/")) url += "/";
+        url += "devices/" + getDeviceId() + "/addDetectError";
+
+        String payload = "{\"title\":\"" + escapeJsonString(err.title) +
+                         "\",\"description\":\"" + escapeJsonString(err.description) +
+                         "\"}";
+
+        DebugSerial::println("[SIM800L] Sending detected error to: " + url);
+        DebugSerial::println("[SIM800L] Payload: " + payload);
+
+        int statusCode = 0;
+        sendHttpPost(url, payload, nullptr, &statusCode);
+
+        if (statusCode >= 200 && statusCode < 300) {
+            // Delivered: remove it from the queue and continue with the next.
+            data.popDetectedError(err);
+            DebugSerial::println("[SIM800L] Detected error sent (HTTP " + String(statusCode) + ").");
+        } else {
+            DebugSerial::println("[SIM800L] ERROR: Failed to send detected error. Status: " +
+                                 String(statusCode) + ". Keeping remaining errors queued.");
+            allSent = false;
+            break;
+        }
+    }
+
+    return allSent;
 }
 
 bool SIM800LManager::sendHttpPost(const String& url, const String& jsonPayload, String* responseBody, int* statusCodeOut) {

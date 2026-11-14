@@ -7,6 +7,7 @@
 #include "VehicleData.h"
 #include "FuelCalculator.h"
 #include "DisplayManager.h"
+#include "ErrorDetector.h"
 #include "SIM800LManager.h"
 
 DisplayManager display;
@@ -15,6 +16,7 @@ uint32_t startOBDIIConnectionID = 0;
 uint32_t ecuMessagesSenderID = 0;
 uint32_t fuelCalculatorID = 0;
 uint32_t cellularSenderID = 0;
+uint32_t errorDetectorID = 0;
 
 // (displayUpdateID removed: the display refresh timer never needed its ID.)
 
@@ -80,6 +82,7 @@ void setObdStatustoConnected()
   DebugSerial::println("OBDII Connected!");
   CallbackManager::resumeTimer(ecuMessagesSenderID);
   CallbackManager::resumeTimer(fuelCalculatorID);
+  CallbackManager::resumeTimer(errorDetectorID);
 
   checkAndTriggerDTCCollection();
 }
@@ -113,6 +116,7 @@ void setObdStatustoOffline()
   CallbackManager::resumeTimer(startOBDIIConnectionID);
   CallbackManager::pauseTimer(ecuMessagesSenderID);
   CallbackManager::pauseTimer(fuelCalculatorID);
+  CallbackManager::pauseTimer(errorDetectorID);
 
   setEcuStatustoOffline();
   OBDManager::clearCommandQueue();
@@ -196,6 +200,14 @@ void setup() {
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_online_flag,setEcuStatustoOnline);
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_offline_flag,setEcuStatustoOffline);
 
+    // Real-time error detection: as soon as an error is queued by the
+    // ErrorDetector, kick a cellular send (the background send task also
+    // drains the detected-error queue after the DTCs).
+    CallbackManager::addFlagWatcher(&ErrorDetector::newErrorDetectedFlag, []() {
+        DebugSerial::println("[ErrorDetector] New error detected. Triggering cellular transmission...");
+        SIM800LManager::sendNonVolatileData();
+    });
+
     // eSIM Signals
     CallbackManager::addFlagWatcher(&SIM800LManager::esimConnectedFlag, setEsimStatustoConnected);
     CallbackManager::addFlagWatcher(&SIM800LManager::esimDisconnectedFlag, setEsimStatustoDisconnected);
@@ -206,12 +218,14 @@ void setup() {
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
     ecuMessagesSenderID = CallbackManager::addTimer(400, messageSendingCallback);
     fuelCalculatorID = CallbackManager::addTimer(500, []() { FuelCalculator::getInstance().update(); });
+    errorDetectorID = CallbackManager::addTimer(1000, ErrorDetector::update);
     CallbackManager::addTimer(500, []() { display.updateAll(); });
     cellularSenderID = CallbackManager::addTimer(CELLULAR_SEND_INTERVAL_MS, []() { SIM800LManager::sendNonVolatileData(); });
 
     // Timers control
     CallbackManager::pauseTimer(ecuMessagesSenderID);
     CallbackManager::pauseTimer(fuelCalculatorID);
+    CallbackManager::pauseTimer(errorDetectorID);
     // NOTE: cellularSenderID is intentionally NOT paused here.
     // It used to be paused, resumed only by setEsimStatustoConnected()
     // (triggered by SIM800LManager::esimConnectedFlag). But esimConnectedFlag

@@ -42,6 +42,7 @@ VehicleData::VehicleData()
       // Not persisted: DTCs must be requested once per boot. Placed here
       // (not after tripConsumption) to match member declaration order.
       requestDTCsOnStarted(0),
+      lastDetectedErrorMs(0),
       gasolineLevel(DEFAULT_GASOLINE_LEVEL),
       tankCapacity(DEFAULT_TANK_CAPACITY),
       fuelConsumptionFactor(DEFAULT_FUEL_CONSUMPTION_FACTOR),
@@ -337,4 +338,54 @@ void VehicleData::clearDTCs() {
 int VehicleData::getDTCCount() const {
     VdLock lock(const_cast<VehicleData*>(this)->m_mutex);
     return (int)dtcList.size();
+}
+
+// -----------------------------------------------------------------------------
+// Real-time Detected Errors
+// -----------------------------------------------------------------------------
+
+void VehicleData::pushDetectedError(const String& title, const String& description) {
+    VdLock lock(m_mutex);
+    // Bounded queue: if the cellular link is down for a long time, drop the
+    // oldest errors instead of growing the heap indefinitely.
+    if (detectedErrors.size() >= 10) {
+        detectedErrors.erase(detectedErrors.begin());
+    }
+    DetectedError e;
+    e.title = title;
+    e.description = description;
+    detectedErrors.push_back(e);
+    lastDetectedErrorTitle = title;
+    lastDetectedErrorMs = millis();
+    DebugSerial::println("[ErrorDetector] Detected: " + title + " - " + description);
+}
+
+bool VehicleData::popDetectedError(DetectedError& out) {
+    VdLock lock(m_mutex);
+    if (detectedErrors.empty()) return false;
+    out = detectedErrors.front();
+    detectedErrors.erase(detectedErrors.begin());
+    return true;
+}
+
+bool VehicleData::peekDetectedError(DetectedError& out) const {
+    VdLock lock(const_cast<VehicleData*>(this)->m_mutex);
+    if (detectedErrors.empty()) return false;
+    out = detectedErrors.front();
+    return true;
+}
+
+int VehicleData::getDetectedErrorCount() const {
+    VdLock lock(const_cast<VehicleData*>(this)->m_mutex);
+    return (int)detectedErrors.size();
+}
+
+String VehicleData::getLastDetectedErrorTitle() const {
+    VdLock lock(const_cast<VehicleData*>(this)->m_mutex);
+    return lastDetectedErrorTitle;
+}
+
+unsigned long VehicleData::getLastDetectedErrorMs() const {
+    VdLock lock(const_cast<VehicleData*>(this)->m_mutex);
+    return lastDetectedErrorMs;
 }
