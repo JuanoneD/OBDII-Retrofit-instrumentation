@@ -2,7 +2,10 @@
 #define VEHICLE_DATA_H
 
 #include <Arduino.h>
+#include <vector>
 #include <Preferences.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "config.h"
 
 class VehicleData {
@@ -70,6 +73,18 @@ public:
     int getSyncVersion() const;
     void setSyncVersion(int version);
 
+    int getDiagnoseMode() const;
+    void setDiagnoseMode(int mode);
+
+    int getRequestDTCsOnStarted() const;
+    void setRequestDTCsOnStarted(int request);
+
+    // --- Diagnostic Trouble Codes (DTCs) ---
+    std::vector<String> getDTCs() const;
+    void setDTCs(const std::vector<String>& dtcs);
+    void clearDTCs();
+    int getDTCCount() const;
+
 private:
     VehicleData();
     ~VehicleData();
@@ -79,6 +94,14 @@ private:
     VehicleData& operator=(const VehicleData&) = delete;
 
     Preferences preferences;
+
+    // Serializes every public getter/setter. VehicleData is touched both by
+    // the loop task (FuelCalculator, display, OBD decoding) and by the
+    // SIM800L background send task (buildNonVolatileJson(), clearDTCs(),
+    // setEsimStatus()). NVS/Preferences is not thread-safe and concurrent
+    // flash writes could corrupt the partition, so all access goes through
+    // this mutex.
+    SemaphoreHandle_t m_mutex;
 
     // Status attributes
     OBDIISTATUS obdiiStatus;
@@ -95,6 +118,9 @@ private:
     float moduleVoltage;
     float longTermFuelTrim;
     float mapPressure;
+    std::vector<String> dtcList;
+    // when the diagnosic mode is enabled, this flag is to marker if the DTCs have been requested; Is not persisted because the DTCs request must be done every time the system is started
+    int requestDTCsOnStarted; 
 
     // Persistent attributes
     float gasolineLevel;
@@ -104,6 +130,7 @@ private:
                              // increments once mileage reaches typical
                              // lifetime values (e.g. 100,000+ km) with float.
     float tripConsumption;
+    int diagnoseMode; // 0 = disabled, 1 = enabled
     int syncVersion;
 
     // Default constants for persistence
@@ -113,6 +140,7 @@ private:
     static constexpr double DEFAULT_TOTAL_DISTANCE = 0.0;
     static constexpr float DEFAULT_TRIP_CONSUMPTION = 0.0f;
     static constexpr int DEFAULT_SYNC_VERSION = 0;
+    static constexpr int DEFAULT_DIAGNOSE_MODE = 0;
 };
 
 #endif // VEHICLE_DATA_H

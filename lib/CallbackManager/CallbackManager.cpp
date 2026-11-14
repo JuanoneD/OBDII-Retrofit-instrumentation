@@ -56,54 +56,6 @@ bool CallbackManager::resumeTimer(uint32_t timerId) {
     return false;
 }
 
-bool CallbackManager::toggleTimer(uint32_t timerId) {
-    for (auto& timer : m_timers) {
-        if (timer.id == timerId) {
-            timer.enabled = !timer.enabled;
-            if (timer.enabled) {
-                timer.lastExecution = millis();
-            }
-            return true;
-        }
-    }
-    return false;
-}
-
-bool CallbackManager::removeTimer(uint32_t timerId) {
-    for (auto it = m_timers.begin(); it != m_timers.end(); ++it) {
-        if (it->id == timerId) {
-            m_timers.erase(it);
-            return true;
-        }
-    }
-    return false;
-}
-
-bool CallbackManager::setTimerInterval(uint32_t timerId, unsigned long newIntervalMs) {
-    for (auto& timer : m_timers) {
-        if (timer.id == timerId) {
-            timer.intervalMs = newIntervalMs;
-            timer.lastExecution = millis();
-            return true;
-        }
-    }
-    return false;
-}
-
-bool CallbackManager::resetTimer(uint32_t timerId) {
-    for (auto& timer : m_timers) {
-        if (timer.id == timerId) {
-            timer.lastExecution = millis();
-            return true;
-        }
-    }
-    return false;
-}
-
-void CallbackManager::clearTimers() {
-    m_timers.clear();
-}
-
 // =============================================================================
 // FLAG WATCHER SUBSYSTEM (POINTER COUNTER) IMPLEMENTATION
 // =============================================================================
@@ -122,49 +74,6 @@ uint32_t CallbackManager::addFlagWatcher(int* flagPtr, CallbackFunction callback
 
     m_flagWatchers.push_back(watcher);
     return watcher.id;
-}
-
-bool CallbackManager::pauseFlagWatcher(uint32_t flagId) {
-    for (auto& watcher : m_flagWatchers) {
-        if (watcher.id == flagId) {
-            watcher.enabled = false;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool CallbackManager::resumeFlagWatcher(uint32_t flagId) {
-    for (auto& watcher : m_flagWatchers) {
-        if (watcher.id == flagId) {
-            watcher.enabled = true;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool CallbackManager::removeFlagWatcher(uint32_t flagId) {
-    for (auto it = m_flagWatchers.begin(); it != m_flagWatchers.end(); ++it) {
-        if (it->id == flagId) {
-            m_flagWatchers.erase(it);
-            return true;
-        }
-    }
-    return false;
-}
-
-int CallbackManager::getPendingCycles(uint32_t flagId) {
-    for (const auto& watcher : m_flagWatchers) {
-        if (watcher.id == flagId) {
-            return watcher.pendingCycles;
-        }
-    }
-    return -1;
-}
-
-void CallbackManager::clearFlagWatchers() {
-    m_flagWatchers.clear();
 }
 
 // =============================================================================

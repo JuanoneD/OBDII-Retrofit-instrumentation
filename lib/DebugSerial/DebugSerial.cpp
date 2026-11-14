@@ -10,10 +10,6 @@ void DebugSerial::begin(unsigned long baudRate) {
     Serial.begin(baudRate);
 }
 
-void DebugSerial::init(unsigned long baudRate) {
-    begin(baudRate);
-}
-
 void DebugSerial::setEnabled(bool enabled) {
     m_enabled = enabled;
 }

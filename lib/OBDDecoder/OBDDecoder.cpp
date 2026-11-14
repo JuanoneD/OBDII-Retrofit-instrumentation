@@ -1,13 +1,9 @@
 #include "OBDDecoder.h"
+#include "OBDManager.h"
+#include <algorithm>
 
 int OBDDecoder::ecu_online_flag = 0;
 int OBDDecoder::ecu_offline_flag = 0;
-
-OBDDecoder::OBDDecoder() {
-}
-
-OBDDecoder::~OBDDecoder() {
-}
 
 void OBDDecoder::decode(const String& rawResponse) {
     String clean = rawResponse;
@@ -17,10 +13,43 @@ void OBDDecoder::decode(const String& rawResponse) {
     clean.replace("\n", "");
     clean.toUpperCase();
 
+    // Handle Mode 03 (DTC) response.
+    //
+    // The response line must START with "43" (headers are disabled via ATH0).
+    // A substring search anywhere in the frame would false-positive on PID
+    // data bytes (e.g. a coolant temp reading of 0x43 inside a "41 05 43"
+    // response), causing decodeDTC() to run on a normal PID response, which
+    // wipes the stored DTC list and ends DTC collection prematurely.
+    if (isMode03Response(clean)) {
+        decodeDTC(rawResponse);
+        ecu_online_flag = 1;
+        return;
+    }
+
+    // Handle NO DATA response while in DTC collection mode ("NO DATA" becomes
+    // "NODATA" because spaces were stripped above)
+    if (OBDManager::isDtcCollectionMode() && clean.indexOf("NODATA") != -1) {
+        decodeDTC(rawResponse);
+        return;
+    }
+
     int idx = clean.indexOf("41");
     if (idx == -1 || clean.length() < (unsigned int)(idx + 4)) {
-        DebugSerial::println("Offline response: " + rawResponse);
-        ecu_offline_flag = 1;
+        // Not a PID frame. Only "NO ANSWER" (spaces stripped -> "NOANSWER"),
+        // which the ELM327 returns when the ECU does not answer on the bus,
+        // actually means the ECU is offline. Everything else that is not a
+        // "41..." frame - "NO DATA" (ECU answered, PID unsupported),
+        // "ERROR" (adapter-internal), AT handshake echoes ("ATE0 OK",
+        // "READY", ...) right after connect - proves the adapter/ECU did
+        // respond. Flipping the ECU state on those used to make the display
+        // flicker between the dashboard and "Waiting for ECU..." on every
+        // transient adapter hiccup and on every (re)connect.
+        if (clean.indexOf("NOANSWER") != -1) {
+            DebugSerial::println("ECU no answer: " + rawResponse);
+            ecu_offline_flag = 1;
+        } else {
+            DebugSerial::println("Ignored non-PID response (ECU state unchanged): " + rawResponse);
+        }
         return;
     }
 
@@ -77,8 +106,8 @@ void OBDDecoder::decodeRPM(const String& data) {
 void OBDDecoder::decodeVehicleSpeed(const String& data) {
     if (data.length() < 2) return;
     uint8_t a = (uint8_t)strtoul(data.substring(0, 2).c_str(), nullptr, 16);
-    int speed = a;
-    speed *= 1.07; // Adjust for speedometer calibration (7% increase)
+    // Vehicle-specific speedometer calibration (see config.h).
+    int speed = (int)(a * OBD_SPEEDOMETER_CALIBRATION);
     VehicleData::getInstance().setVehicleSpeed(speed);
     DebugSerial::println("Speed: " + String(speed) + " km/h");
 }
@@ -145,4 +174,151 @@ void OBDDecoder::decodeMAP(const String& data) {
     float map = (float)a;
     VehicleData::getInstance().setMapPressure(map);
     DebugSerial::println("MAP: " + String(map) + " kPa");
+}
+
+// Returns true only if some line of the (spaces-stripped, uppercase) response
+// starts with "43". Lines are split on '\n' so a leading "SEARCHING..." line
+// (printed by some adapters before the actual response) does not break
+// detection, while a "43" appearing mid-line as PID data does not trigger it.
+bool OBDDecoder::isMode03Response(const String& clean) {
+    int lineStart = 0;
+    while (lineStart < (int)clean.length()) {
+        int lineEnd = clean.indexOf('\n', lineStart);
+        if (lineEnd == -1) lineEnd = clean.length();
+        if (clean.substring(lineStart, lineEnd).startsWith("43")) {
+            return true;
+        }
+        lineStart = lineEnd + 1;
+    }
+    return false;
+}
+
+void OBDDecoder::decodeDTC(const String& rawResponse) {
+    DebugSerial::println("[OBDDecoder] Receiving DTC response: " + rawResponse);
+
+    std::vector<String> dtcList;
+
+    String upper = rawResponse;
+    upper.toUpperCase();
+
+    if (upper.indexOf("NO DATA") != -1 || upper.indexOf("NODATA") != -1) {
+        DebugSerial::println("[OBDDecoder] No DTCs reported (NO DATA).");
+        VehicleData::getInstance().setDTCs(dtcList);
+        OBDManager::endDTCCollection(0);
+        return;
+    }
+
+    std::vector<uint8_t> bytes;
+    int lineStart = 0;
+    int len = rawResponse.length();
+
+    while (lineStart < len) {
+        int lineEnd = rawResponse.indexOf('\n', lineStart);
+        if (lineEnd == -1) lineEnd = len;
+
+        String line = rawResponse.substring(lineStart, lineEnd);
+        lineStart = lineEnd + 1;
+
+        line.trim();
+        line.replace("\r", "");
+        line.replace(">", "");
+        line.toUpperCase();
+
+        if (line.length() == 0) continue;
+
+        // Strip CAN sequence index like "0:", "1:"
+        int colonIdx = line.indexOf(':');
+        if (colonIdx != -1 && colonIdx < 4) {
+            line = line.substring(colonIdx + 1);
+            line.trim();
+        }
+
+        // Collect hex characters
+        String hexOnly = "";
+        for (size_t k = 0; k < line.length(); k++) {
+            char c = line[k];
+            if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) {
+                hexOnly += c;
+            }
+        }
+
+        // Convert hex pairs to bytes
+        for (size_t k = 0; k + 1 < hexOnly.length(); k += 2) {
+            String byteStr = hexOnly.substring(k, k + 2);
+            uint8_t val = (uint8_t)strtoul(byteStr.c_str(), nullptr, 16);
+            bytes.push_back(val);
+        }
+    }
+
+    auto addDTCBytes = [&](uint8_t b1, uint8_t b2) {
+        if (b1 == 0 && b2 == 0) return;
+        char hexBuf[5];
+        snprintf(hexBuf, sizeof(hexBuf), "%02X%02X", b1, b2);
+        String dtc = String(hexBuf);
+        if (std::find(dtcList.begin(), dtcList.end(), dtc) == dtcList.end()) {
+            dtcList.push_back(dtc);
+        }
+    };
+
+    size_t i = 0;
+    while (i < bytes.size()) {
+        if (bytes[i] == 0x43) {
+            i++; // skip 0x43
+            if (i >= bytes.size()) break;
+
+            // Check if there are no DTCs (e.g. 43 00)
+            if (bytes[i] == 0x00 && (i + 1 >= bytes.size() || bytes[i+1] == 0x00)) {
+                break;
+            }
+
+            // Find segment boundary (until next 0x43 or end)
+            size_t segEnd = i;
+            while (segEnd < bytes.size() && bytes[segEnd] != 0x43) {
+                segEnd++;
+            }
+            size_t segLen = segEnd - i;
+
+            uint8_t countCandidate = bytes[i];
+            bool hasCountByte = false;
+
+            // If segLen is ODD (1 count byte + 2k DTC bytes)
+            if ((segLen % 2 != 0) && countCandidate <= 32) {
+                hasCountByte = true;
+            }
+
+            if (hasCountByte) {
+                i++; // skip count byte
+                int remainingToCollect = countCandidate;
+                while (i + 1 < segEnd && remainingToCollect > 0) {
+                    uint8_t b1 = bytes[i];
+                    uint8_t b2 = bytes[i + 1];
+                    i += 2;
+                    if (b1 != 0 || b2 != 0) {
+                        addDTCBytes(b1, b2);
+                        remainingToCollect--;
+                    }
+                }
+                i = segEnd;
+            } else {
+                // segLen is EVEN (legacy ISO 9141-2 / J1850 or direct pairs)
+                while (i + 1 < segEnd) {
+                    uint8_t b1 = bytes[i];
+                    uint8_t b2 = bytes[i + 1];
+                    i += 2;
+                    addDTCBytes(b1, b2);
+                }
+                i = segEnd;
+            }
+        } else {
+            i++;
+        }
+    }
+
+    DebugSerial::println("[OBDDecoder] Saved " + String(dtcList.size()) + " DTC(s):");
+    for (const String& dtc : dtcList) {
+        DebugSerial::println("  - " + dtc);
+    }
+
+    VehicleData::getInstance().setDTCs(dtcList);
+    OBDManager::endDTCCollection(dtcList.size());
 }

@@ -14,8 +14,9 @@ DisplayManager display;
 uint32_t startOBDIIConnectionID = 0;
 uint32_t ecuMessagesSenderID = 0;
 uint32_t fuelCalculatorID = 0;
-uint32_t displayUpdateID = 0;
 uint32_t cellularSenderID = 0;
+
+// (displayUpdateID removed: the display refresh timer never needed its ID.)
 
 int messageIndex = 0;
 
@@ -52,6 +53,24 @@ void messageSendingCallback()
   messageIndex++;
 }
 
+void checkAndTriggerDTCCollection()
+{
+  if (VehicleData::getInstance().getDiagnoseMode() &&
+      !VehicleData::getInstance().getRequestDTCsOnStarted() &&
+      VehicleData::getInstance().getEcuStatus() == ECUSTATUS::ONLINE &&
+      VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::CONNECTED)
+  {
+    DebugSerial::println("[DTC] Diagnose mode active. Requesting DTCs on start...");
+    // Only pause the periodic PID polling if DTC collection actually started;
+    // startedCollectDTCsMode() re-validates ECU/OBD state internally and can
+    // refuse, in which case the polling timer must stay running.
+    if (OBDManager::startedCollectDTCsMode()) {
+      CallbackManager::pauseTimer(ecuMessagesSenderID);
+      display.updateAll();
+    }
+  }
+}
+
 void setObdStatustoConnected()
 {
   if (VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::CONNECTED) return;
@@ -61,6 +80,8 @@ void setObdStatustoConnected()
   DebugSerial::println("OBDII Connected!");
   CallbackManager::resumeTimer(ecuMessagesSenderID);
   CallbackManager::resumeTimer(fuelCalculatorID);
+
+  checkAndTriggerDTCCollection();
 }
 
 void setEcuStatustoOnline()
@@ -69,6 +90,8 @@ void setEcuStatustoOnline()
 
   VehicleData::getInstance().setEcuStatus(ECUSTATUS::ONLINE);
   DebugSerial::println("ECU Online!");
+
+  checkAndTriggerDTCCollection();
 }
 
 void setEcuStatustoOffline()
@@ -115,7 +138,9 @@ void setEsimStatustoConnected()
 
   VehicleData::getInstance().setEsimStatus(ESIMSTATUS::CONNECTED);
   DebugSerial::println("eSIM Connected!");
-  CallbackManager::resumeTimer(cellularSenderID);
+  // No resumeTimer here: the only path that pauses cellularSenderID is
+  // WITHOUT_SIM, and leaving that state always goes through DISCONNECTED
+  // first (checkSimStatus), which already resumes it.
 }
 
 void setEsimStatustoDisconnected()
@@ -159,6 +184,15 @@ void setup() {
     CallbackManager::addFlagWatcher(&OBDManager::obdConnectedFlag,setObdStatustoConnected);
     CallbackManager::addFlagWatcher(&OBDManager::obdDisconnectedFlag,setObdStatustoOffline);
     CallbackManager::addFlagWatcher(&OBDManager::obdConnectionAttemptFlag,setObdStatustoTryingToConnect);
+    CallbackManager::addFlagWatcher(&OBDManager::dtcCollectionEndedFlag, []() {
+        DebugSerial::println("DTC collection ended flag triggered.");
+        CallbackManager::resumeTimer(ecuMessagesSenderID);
+        display.updateAll();
+        if (VehicleData::getInstance().getDTCCount() > 0) {
+            DebugSerial::println("[DTC] Errors found, triggering cellular transmission...");
+            SIM800LManager::sendNonVolatileData();
+        }
+    });
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_online_flag,setEcuStatustoOnline);
     CallbackManager::addFlagWatcher(&OBDDecoder::ecu_offline_flag,setEcuStatustoOffline);
 
@@ -166,12 +200,13 @@ void setup() {
     CallbackManager::addFlagWatcher(&SIM800LManager::esimConnectedFlag, setEsimStatustoConnected);
     CallbackManager::addFlagWatcher(&SIM800LManager::esimDisconnectedFlag, setEsimStatustoDisconnected);
     CallbackManager::addFlagWatcher(&SIM800LManager::esimWithoutSimFlag, setEsimStatustoWithoutSim);
+    CallbackManager::addFlagWatcher(&SIM800LManager::diagnoseModeReceivedFlag, checkAndTriggerDTCCollection);
 
     // Timers
     startOBDIIConnectionID = CallbackManager::addTimer(1000, startOBDIIConnection);
     ecuMessagesSenderID = CallbackManager::addTimer(400, messageSendingCallback);
     fuelCalculatorID = CallbackManager::addTimer(500, []() { FuelCalculator::getInstance().update(); });
-    displayUpdateID  = CallbackManager::addTimer(500, []() { display.updateAll(); });
+    CallbackManager::addTimer(500, []() { display.updateAll(); });
     cellularSenderID = CallbackManager::addTimer(CELLULAR_SEND_INTERVAL_MS, []() { SIM800LManager::sendNonVolatileData(); });
 
     // Timers control

@@ -17,6 +17,10 @@ void FuelCalculator::begin() {
     // so that backend-driven calibration changes take effect immediately
     // instead of requiring a reboot.
     lastUpdateMs = millis();
+    lastPersistMs = millis();
+    pendingFuelDelta = 0.0;
+    pendingDistanceDelta = 0.0;
+    pendingTripDelta = 0.0;
     initialized = true;
 
     DebugSerial::println("[FuelCalculator] Initialized with K = " +
@@ -39,6 +43,11 @@ void FuelCalculator::update() {
     // disconnected interval at whatever speed/consumption is first reported
     // after reconnection.
     if (!linkUp) {
+        if (wasLinkUp) {
+            // Link just dropped: flush the accumulated (not yet persisted)
+            // deltas so the last interval of driving is not lost.
+            persistPending();
+        }
         wasLinkUp = false;
         lastUpdateMs = millis();
         return;
@@ -70,9 +79,10 @@ void FuelCalculator::update() {
     // Uses double precision internally (VehicleData stores totalDistance as
     // double) so small per-tick increments are not lost to float rounding
     // once the odometer reaches typical lifetime mileage (e.g. 100,000 km).
+    // Accumulated locally and flushed to NVS by persistPending() on a
+    // throttle (see .h), not on every tick.
     if (speedKmh > 0.0f) {
-        double distanceDeltaKm = (static_cast<double>(speedKmh) * dt) / 3600.0;
-        vd.setTotalDistance(vd.getTotalDistance() + distanceDeltaKm);
+        pendingDistanceDelta += (static_cast<double>(speedKmh) * dt) / 3600.0;
     }
 
     // 3. Convert LTFT percentage to a multiplicative correction factor (e.g., -10% -> 0.90, +5% -> 1.05)
@@ -92,13 +102,37 @@ void FuelCalculator::update() {
 
     if (consumption <= 0.0f) return;
 
-    // 5. Subtract from persistent gasoline level and persist via setter (NVS)
-    float currentLevel = vd.getGasolineLevel();
-    float newLevel = currentLevel - consumption;
-    if (newLevel < 0.0f) newLevel = 0.0f;
+    // 5. Accumulate consumption locally; NVS is updated by persistPending()
+    //    every PERSIST_INTERVAL_MS (and on link drop).
+    pendingFuelDelta -= consumption;
+    pendingTripDelta += consumption;
 
-    vd.setGasolineLevel(newLevel);
+    if (now - lastPersistMs >= PERSIST_INTERVAL_MS) {
+        persistPending();
+    }
+}
 
-    // Also accumulate on trip consumption for reporting
-    vd.setTripConsumption(vd.getTripConsumption() + consumption);
+void FuelCalculator::persistPending() {
+    if (pendingFuelDelta == 0.0 && pendingDistanceDelta == 0.0 && pendingTripDelta == 0.0) {
+        return;
+    }
+
+    VehicleData& vd = VehicleData::getInstance();
+
+    if (pendingFuelDelta != 0.0) {
+        double newLevel = (double)vd.getGasolineLevel() + pendingFuelDelta;
+        pendingFuelDelta = 0.0;
+        if (newLevel < 0.0) newLevel = 0.0;
+        vd.setGasolineLevel((float)newLevel);
+    }
+    if (pendingDistanceDelta != 0.0) {
+        vd.setTotalDistance(vd.getTotalDistance() + pendingDistanceDelta);
+        pendingDistanceDelta = 0.0;
+    }
+    if (pendingTripDelta != 0.0) {
+        vd.setTripConsumption(vd.getTripConsumption() + (float)pendingTripDelta);
+        pendingTripDelta = 0.0;
+    }
+
+    lastPersistMs = millis();
 }
