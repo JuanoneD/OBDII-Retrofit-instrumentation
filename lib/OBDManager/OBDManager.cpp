@@ -51,8 +51,8 @@ void OBDManager::onScanCompleted(BLEScanResults scanResults) {
     for (int i = 0; i < scanResults.getCount(); i++) {
         BLEAdvertisedDevice device = scanResults.getDevice(i);
 
-        // getName() returns an Arduino String in this core version.
-        String name = device.getName();
+        // getName() returns std::string in this core version; convert to Arduino String.
+        String name = String(device.getName().c_str());
         bool nameMatch = name.indexOf(OBDII_NAME_PREFIX) != -1
                        || name.indexOf(OBDII_NAME_PREFIX_2) != -1
                        || name.indexOf(OBDII_NAME_PREFIX_3) != -1;
