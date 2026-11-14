@@ -100,13 +100,17 @@ void FuelCalculator::update() {
     float k = vd.getFuelConsumptionFactor();
     float consumption = (rpm * load * k * ltftMultiplier) * dt;
 
-    if (consumption <= 0.0f) return;
-
     // 5. Accumulate consumption locally; NVS is updated by persistPending()
     //    every PERSIST_INTERVAL_MS (and on link drop).
-    pendingFuelDelta -= consumption;
-    pendingTripDelta += consumption;
+    if (consumption > 0.0f) {
+        pendingFuelDelta -= consumption;
+        pendingTripDelta += consumption;
+    }
 
+    // The persist throttle must be checked even when consumption is 0 (e.g.
+    // zero engine load): an idle/coasting-heavy session used to skip the
+    // flush indefinitely while pendingDistanceDelta kept accumulating in
+    // RAM (lost on a power cut).
     if (now - lastPersistMs >= PERSIST_INTERVAL_MS) {
         persistPending();
     }

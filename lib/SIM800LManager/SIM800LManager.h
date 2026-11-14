@@ -250,7 +250,6 @@ private:
 
     // Background send task state (see sendNonVolatileData()).
     static volatile bool m_sendInProgress;
-    static String m_sendTaskUrl;
     static void sendTaskTrampoline(void* param);
 
     // Pending real-time system errors queued by ErrorDetector::activate()

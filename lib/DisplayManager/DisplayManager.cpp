@@ -147,8 +147,10 @@ String DisplayManager::formatLtft(float trimPct) {
     int val = (int)(trimPct + (trimPct >= 0 ? 0.5f : -0.5f));
     
     char buf[8];
-    // Explicitly format with sign (+ or -) followed by the number and '%'
-    snprintf(buf, sizeof(buf), "%+d%% ", val);
+    // Explicitly format with sign (+ or -) followed by the number and '%'.
+    // No trailing space: written at col 16 of a 20-col line, a two-digit
+    // value with the trailing space would write one char past the row.
+    snprintf(buf, sizeof(buf), "%+d%%", val);
     return String(buf);
 }
 
@@ -299,7 +301,12 @@ void DisplayManager::renderDashboard() {
     // When the error clears, force a bar redraw by invalidating its cache.
     const char* errorTitle = ErrorDetector::getActiveErrorTitle();
     if (errorTitle != nullptr) {
-        String line = "! " + String(errorTitle);
+        // "! " (2 chars) + title must fit in m_cols: truncate the title to
+        // m_cols - 2 before prefixing, or the last 2 chars get silently
+        // chopped by padRight().
+        String t = String(errorTitle);
+        if (t.length() > m_cols - 2) t = t.substring(0, m_cols - 2);
+        String line = "! " + t;
         writeIfChanged(0, 3, padRight(line, m_cols), m_cacheErrorTitle);
         if (m_cacheRpmBarBlocks != -1) m_cacheRpmBarBlocks = -1;
     } else {

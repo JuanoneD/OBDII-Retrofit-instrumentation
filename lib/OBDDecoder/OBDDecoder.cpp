@@ -6,11 +6,15 @@ int OBDDecoder::ecu_online_flag = 0;
 int OBDDecoder::ecu_offline_flag = 0;
 
 void OBDDecoder::decode(const String& rawResponse) {
+    // Mode 03 detection runs on a newline-PRESERVING copy (spaces/'>') so
+    // isMode03Response() can split lines: multi-line CAN responses
+    // ("0: 43 ..." / "1: ...") and 'SEARCHING...'-prefixed replies must be
+    // detected. Stripping '\n' here used to make that line-splitting dead
+    // code and wedged DTC collection on such responses.
     String clean = rawResponse;
     clean.replace(" ", "");
     clean.replace(">", "");
     clean.replace("\r", "");
-    clean.replace("\n", "");
     clean.toUpperCase();
 
     // Handle Mode 03 (DTC) response.
@@ -50,12 +54,25 @@ void OBDDecoder::decode(const String& rawResponse) {
         } else {
             DebugSerial::println("Ignored non-PID response (ECU state unchanged): " + rawResponse);
         }
+        // During DTC collection any frame that is neither a "43..." response,
+        // a "NO DATA" reply nor a valid PID frame (e.g. "NO ANSWER", "STOPPED",
+        // "CAN ERROR", "BUS ERROR") must END the collection. Otherwise the
+        // request is never re-sent (addCommandToQueue rejects everything else
+        // in DTC mode) and messageReceived is already true (so the OBDManager
+        // timeout is skipped), leaving the polling timer paused forever.
+        if (OBDManager::isDtcCollectionMode()) {
+            DebugSerial::println("[OBDDecoder] Non-DTC frame during DTC collection; ending collection.");
+            OBDManager::endDTCCollection(0);
+        }
         return;
     }
 
     String pidStr = clean.substring(idx + 2, idx + 4);
     uint8_t pid = (uint8_t)strtoul(pidStr.c_str(), nullptr, 16);
     String data = clean.substring(idx + 4);
+    // Newlines only ever exist in multi-frame responses; strip them so the
+    // per-PID hex pair parsers never see a non-hex byte inside the data.
+    data.replace("\n", "");
 
     switch (pid) {
         case PID_ENGINE_RPM:

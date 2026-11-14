@@ -31,7 +31,6 @@ int& SIM800LManager::simDisconnectedFlag = SIM800LManager::esimDisconnectedFlag;
 int& SIM800LManager::withoutSimFlag = SIM800LManager::esimWithoutSimFlag;
 
 volatile bool SIM800LManager::m_sendInProgress = false;
-String SIM800LManager::m_sendTaskUrl = "";
 SemaphoreHandle_t SIM800LManager::m_serialMutex = nullptr;
 
 portMUX_TYPE SIM800LManager::m_pendingResponseMux = portMUX_INITIALIZER_UNLOCKED;
@@ -57,6 +56,13 @@ static const unsigned long kDrainIdleMs = 100;
 // like +CREG:/+CPIN: continuously) reset the idle timer on every byte and
 // hung the loop() forever inside this blocking call.
 static const unsigned long kDrainMaxMs = 2000;
+// Cap for a single AT response. Noise or a very chatty response (e.g.
+// AT+COPS=? with a 120s window) must never grow the String unbounded on the
+// 16KB-stack send task.
+static const size_t kMaxAtResponseLength = 8192;
+// Cap for the pending system-error queue (bounded flush re-queueing, see
+// flushPendingSystemErrors()).
+static const size_t kMaxPendingSystemErrors = 20;
 
 static bool differs(float a, float b, float eps) {
     return fabsf(a - b) > eps;
@@ -74,6 +80,10 @@ static String readSerialResponse(HardwareSerial* serial, unsigned long timeoutMs
     while (!done && (millis() - start < timeoutMs)) {
         while (serial->available()) {
             response += (char)serial->read();
+            if (response.length() > kMaxAtResponseLength) {
+                done = true; // runaway response: stop accumulating
+                break;
+            }
         }
 
         if (hasExpected && response.indexOf(expected) != -1) {
@@ -90,7 +100,7 @@ static String readSerialResponse(HardwareSerial* serial, unsigned long timeoutMs
         unsigned long lastByte = drainStart;
         while ((millis() - lastByte < kDrainIdleMs) &&
                (millis() - drainStart < kDrainMaxMs)) {
-            while (serial->available()) {
+            while (serial->available() && response.length() <= kMaxAtResponseLength) {
                 response += (char)serial->read();
                 lastByte = millis();
             }
@@ -102,8 +112,13 @@ static String readSerialResponse(HardwareSerial* serial, unsigned long timeoutMs
 }
 
 // Reads one '\n'-terminated line from an Arduino Client using only
-// NON-blocking reads, bounded by a millis() deadline. Returns true when a
+// NON-blocking reads, bounded by a millis() timeout. Returns true when a
 // full line was read (trailing '\r' stripped), false on timeout/disconnect.
+//
+// The timeout uses the ROLLOVER-SAFE form (millis() - start >= timeout)
+// instead of an absolute deadline: `deadline = millis() + timeout`
+// comparisons break at the ~49.7-day millis() wraparound, causing spurious
+// instant timeouts on every read after the wrap.
 //
 // Needed because Stream::readStringUntil() has two failure modes that bite
 // us here: (1) it returns EARLY with a partial line when the buffer does not
@@ -111,7 +126,7 @@ static String readSerialResponse(HardwareSerial* serial, unsigned long timeoutMs
 // few bytes of the response have arrived; and (2) it has NO timeout, so a
 // stalled peer with the TCP connection still open would hang the send task
 // forever (and with it m_sendInProgress, i.e. all future telemetry).
-static bool readLineWithTimeout(Client& client, String& lineOut, unsigned long deadlineMs) {
+static bool readLineWithTimeout(Client& client, String& lineOut, unsigned long startMs, unsigned long timeoutMs) {
     for (;;) {
         int c = client.available() ? client.read() : -1;
         if (c != -1) {
@@ -124,7 +139,7 @@ static bool readLineWithTimeout(Client& client, String& lineOut, unsigned long d
             lineOut += (char)c;
             if (lineOut.length() > 1024) return false; // runaway/invalid line
         } else {
-            if (millis() >= deadlineMs ||
+            if ((millis() - startMs >= timeoutMs) ||
                 (!client.connected() && !client.available())) {
                 return false;
             }
@@ -431,13 +446,24 @@ bool SIM800LManager::connectGPRSLocked() {
         return false;
     }
 
-    // 2. Check Network Registration (AT+CREG?) with multiple retries
+    // 2. Check Network Registration (AT+CREG?) with multiple retries.
+    // Parse the status digit properly: locate "+CREG:" first, then the digit
+    // after the following comma. A blind indexOf(",1") used to match ",10"/
+    // ",15" or stray digits anywhere in the response (even inside a CME
+    // ERROR line), faking "registered" and skipping real diagnostics.
     bool registered = false;
     for (int i = 0; i < 8; i++) {
         String cregResp = sendATCommand("AT+CREG?", 3000, "OK");
-        if (cregResp.indexOf(",1") != -1 || cregResp.indexOf(",5") != -1) {
-            registered = true;
-            break;
+        int cregIdx = cregResp.indexOf("+CREG:");
+        if (cregIdx != -1) {
+            int comma = cregResp.indexOf(',', cregIdx);
+            if (comma != -1) {
+                int stat = cregResp.substring(comma + 1).toInt();
+                if (stat == 1 || stat == 5) { // 1 = home, 5 = roaming
+                    registered = true;
+                    break;
+                }
+            }
         }
         DebugSerial::println("[SIM800L] Network not yet registered, waiting...");
         delay(1500);
@@ -474,11 +500,21 @@ bool SIM800LManager::connectGPRSLocked() {
 }
 
 bool SIM800LManager::disconnectGPRS() {
+    // Talk to the modem only while holding the serial mutex, like every
+    // other modem-touching path (currently only called with the mutex
+    // already held from sendHttpPostLocked(), but keep this self-contained
+    // so a future loop-context caller can't corrupt the serial stream).
+    if (m_serialMutex != nullptr) {
+        xSemaphoreTakeRecursive(m_serialMutex, portMAX_DELAY);
+    }
     DebugSerial::println("[SIM800L] Disconnecting GPRS bearer...");
     if (m_modem != nullptr) {
         m_modem->gprsDisconnect();
     } else {
         sendATCommand("AT+SAPBR=0,1", 3000, "OK");
+    }
+    if (m_serialMutex != nullptr) {
+        xSemaphoreGiveRecursive(m_serialMutex);
     }
     setStatus(ESIMSTATUS::DISCONNECTED);
     return true;
@@ -515,8 +551,12 @@ bool SIM800LManager::isSendInProgress() {
 // for network-level failures. A server-side error (HTTP 4xx/5xx) is not a
 // network problem, so it must not trigger them.
 void SIM800LManager::sendTaskTrampoline(void* param) {
+    // The URL is heap-owned by this task (passed as the task parameter), so
+    // a new sendNonVolatileData() call can safely overwrite any shared
+    // staging variable while we run.
+    String* urlParam = static_cast<String*>(param);
     {
-        String url = m_sendTaskUrl;
+        String url = urlParam ? *urlParam : String("");
 
         DebugSerial::println("[SIM800L] Triggering non-volatile data POST transmission...");
 
@@ -551,6 +591,7 @@ void SIM800LManager::sendTaskTrampoline(void* param) {
         flushPendingSystemErrors(url);
     }
 
+    delete urlParam;
     m_sendInProgress = false;
     vTaskDelete(nullptr);
 }
@@ -561,8 +602,10 @@ bool SIM800LManager::sendNonVolatileData(const String& baseUrl) {
         return false;
     }
 
-    m_sendTaskUrl = baseUrl;
     m_sendInProgress = true;
+
+    // The task owns its own copy of the URL (freed in the trampoline).
+    String* urlCopy = new String(baseUrl);
 
     // Pinned to core 1 (same as Arduino's loopTask): the TLS handshake
     // (mbedTLS, via SSLClient) is CPU-heavy and was previously starving
@@ -575,7 +618,7 @@ bool SIM800LManager::sendNonVolatileData(const String& baseUrl) {
         sendTaskTrampoline,
         "sim800SendTask",
         16384,     // stack size: TLS handshake (mbedTLS) + URL/JSON Strings, AT responses, etc.
-        nullptr,
+        urlCopy,
         1,         // low-ish priority, don't starve BLE/other critical tasks
         nullptr,
         1          // core 1 (alongside loopTask), keep core 0's IDLE task free
@@ -583,6 +626,7 @@ bool SIM800LManager::sendNonVolatileData(const String& baseUrl) {
 
     if (result != pdPASS) {
         DebugSerial::println("[SIM800L] ERROR: Failed to create send task.");
+        delete urlCopy;
         m_sendInProgress = false;
         return false;
     }
@@ -696,6 +740,11 @@ void SIM800LManager::queueSystemError(uint8_t id, const String& title, const Str
     if (m_pendingErrorsMux != nullptr) {
         xSemaphoreTake(m_pendingErrorsMux, portMAX_DELAY);
     }
+    // Bounded queue: if the network is dead for a long time, drop the OLDEST
+    // queued error instead of growing the heap without limit.
+    while (m_pendingSystemErrors.size() >= kMaxPendingSystemErrors) {
+        m_pendingSystemErrors.erase(m_pendingSystemErrors.begin());
+    }
     m_pendingSystemErrors.push_back(json);
     if (m_pendingErrorsMux != nullptr) {
         xSemaphoreGive(m_pendingErrorsMux);
@@ -739,16 +788,37 @@ void SIM800LManager::flushPendingSystemErrors(const String& baseUrl) {
 
     DebugSerial::println("[SIM800L] Flushing " + String(batch.size()) + " queued system error(s).");
 
+    std::vector<String> failed;
     for (size_t i = 0; i < batch.size(); i++) {
         String responseBody;
         int statusCode = 0;
         bool ok = sendHttpPost(url, batch[i], &responseBody, &statusCode);
-        if (ok && statusCode == 200) {
+        if (ok && statusCode >= 200 && statusCode < 300) {
             DebugSerial::println("[SIM800L] System error POST sent (HTTP " + String(statusCode) + ").");
         } else {
             DebugSerial::println("[SIM800L] ERROR: system error POST failed (HTTP " +
-                                 String(statusCode) + "). Dropping payload.");
+                                 String(statusCode) + "). Re-queueing payload for the next send.");
+            failed.push_back(batch[i]);
         }
+    }
+
+    if (failed.empty()) return;
+
+    // Re-queue the failures at the FRONT (order preserved) so they are
+    // retried on the next send task run. Bound the queue so a persistently
+    // dead network can't grow it forever: the oldest failures are dropped.
+    if (m_pendingErrorsMux != nullptr) {
+        xSemaphoreTake(m_pendingErrorsMux, portMAX_DELAY);
+    }
+    m_pendingSystemErrors.insert(m_pendingSystemErrors.begin(),
+                                 failed.begin(), failed.end());
+    if (m_pendingSystemErrors.size() > kMaxPendingSystemErrors) {
+        m_pendingSystemErrors.erase(
+            m_pendingSystemErrors.begin(),
+            m_pendingSystemErrors.begin() + (m_pendingSystemErrors.size() - kMaxPendingSystemErrors));
+    }
+    if (m_pendingErrorsMux != nullptr) {
+        xSemaphoreGive(m_pendingErrorsMux);
     }
 }
 
@@ -979,23 +1049,36 @@ bool SIM800LManager::httpPostOverClient(Client& client, const String& url,
     }
 
     // --- Send request ---
-    client.print("POST " + path + " HTTP/1.1\r\n");
-    client.print("Host: " + host + "\r\n");
-    client.print("Content-Type: application/json\r\n");
-    client.print("Content-Length: " + String(jsonPayload.length()) + "\r\n");
-    client.print("Connection: close\r\n");
-    client.print("\r\n");
-    client.print(jsonPayload);
+    // Every print() result is checked: over TinyGsmClient writes go through
+    // AT+CIPSEND chunking, and a full modem buffer causes a short/failed
+    // write. A truncated request (with an intact Content-Length) makes the
+    // server wait for missing body bytes until the 30s deadline, then gets
+    // misreported as a network failure (GPRS teardown + diagnostics storm).
+    auto writeAll = [&](const String& chunk) -> bool {
+        return client.print(chunk) == chunk.length();
+    };
+    if (!writeAll("POST " + path + " HTTP/1.1\r\n") ||
+        !writeAll("Host: " + host + "\r\n") ||
+        !writeAll("Content-Type: application/json\r\n") ||
+        !writeAll("Content-Length: " + String(jsonPayload.length()) + "\r\n") ||
+        !writeAll("Connection: close\r\n") ||
+        !writeAll("\r\n") ||
+        !writeAll(jsonPayload)) {
+        DebugSerial::println("[SIM800L] ERROR: short write while sending HTTP request (truncated).");
+        client.stop();
+        return false;
+    }
 
     // --- Read response ---
-    // Everything below is bounded by a single deadline so a stalled peer can
-    // never hang the send task (and thus m_sendInProgress) indefinitely.
+    // Everything below is bounded by a shared (rollover-safe) start time +
+    // timeout so a stalled peer can never hang the send task (and thus
+    // m_sendInProgress) indefinitely.
     const unsigned long kResponseTimeoutMs = 30000;
-    unsigned long deadline = millis() + kResponseTimeoutMs;
+    unsigned long responseStart = millis();
 
     // Status line, e.g. "HTTP/1.1 200 OK"
     String statusLine;
-    if (!readLineWithTimeout(client, statusLine, deadline)) {
+    if (!readLineWithTimeout(client, statusLine, responseStart, kResponseTimeoutMs)) {
         DebugSerial::println("[SIM800L] ERROR: No status line received before timeout.");
         client.stop();
         return false;
@@ -1011,7 +1094,7 @@ bool SIM800LManager::httpPostOverClient(Client& client, const String& url,
     long contentLength = -1;
     for (;;) {
         String line;
-        if (!readLineWithTimeout(client, line, deadline)) break;
+        if (!readLineWithTimeout(client, line, responseStart, kResponseTimeoutMs)) break;
         line.trim();
         if (line.length() == 0) break; // blank line = end of headers
 
@@ -1189,15 +1272,22 @@ String SIM800LManager::sendATCommand(const String& command, unsigned long timeou
 void SIM800LManager::update() {
     // Apply a server response stashed by the background send task, on the
     // loop context (see stashServerResponse()).
+    // Heap-safety: the copy is made into a stack buffer INSIDE the critical
+    // section (memcpy only); the String constructor would heap-allocate with
+    // interrupts disabled, which is illegal on ESP32.
+    char bodyBuf[sizeof(m_pendingResponseBuffer)];
+    bool hasPending = false;
     portENTER_CRITICAL(&m_pendingResponseMux);
     if (m_pendingResponseReady) {
         m_pendingResponseReady = false;
-        String body(m_pendingResponseBuffer);
-        portEXIT_CRITICAL(&m_pendingResponseMux);
-        applyServerResponse(body);
-        return; // continue with the rest on the next tick
+        memcpy(bodyBuf, m_pendingResponseBuffer, sizeof(bodyBuf));
+        hasPending = true;
     }
     portEXIT_CRITICAL(&m_pendingResponseMux);
+    if (hasPending) {
+        applyServerResponse(String(bodyBuf));
+        return; // continue with the rest on the next tick
+    }
 
     // Hardware not responding or SIM reported missing are otherwise permanent
     // barriers (both are only ever cleared from begin()/checkSimStatus()).
@@ -1222,6 +1312,15 @@ void SIM800LManager::stashServerResponse(const String& body) {
         copyLen = sizeof(m_pendingResponseBuffer) - 1;
     }
     portENTER_CRITICAL(&m_pendingResponseMux);
+    if (m_pendingResponseReady) {
+        // A previous response has not been consumed by update() yet (two
+        // sends completing within one update tick). Dropping the NEW one
+        // keeps the pending slot consistent; a diagnoseMode change that gets
+        // lost here is re-sent by the backend on the next sync.
+        portEXIT_CRITICAL(&m_pendingResponseMux);
+        DebugSerial::println("[SIM800L] WARNING: server response stash still pending, new response dropped.");
+        return;
+    }
     memcpy(m_pendingResponseBuffer, body.c_str(), copyLen);
     m_pendingResponseBuffer[copyLen] = '\0';
     m_pendingResponseReady = true;
@@ -1269,8 +1368,10 @@ void SIM800LManager::tryRecover() {
     // Don't fight the background send task for the serial line.
     if (m_serialMutex != nullptr) {
         if (xSemaphoreTakeRecursive(m_serialMutex, 0) != pdTRUE) {
-            // Remains scheduled: next call (after cooldown) will retry.
-            m_lastRecoveryAttemptMs = 0;
+            // Count this as a real attempt so the 30s cooldown is honored;
+            // leaving it at 0 used to make tryRecoverScheduled() spawn a new
+            // 8KB task on EVERY update() tick (100ms) while the mutex was busy.
+            m_lastRecoveryAttemptMs = millis();
             return;
         }
     }
@@ -1352,7 +1453,11 @@ void SIM800LManager::readIncoming() {
             if (line.length() > 0) {
                 if (line.indexOf("+CPIN: NOT INSERTED") != -1) {
                     setStatus(ESIMSTATUS::WITHOUT_SIM);
-                } else if (line.indexOf("+PDP: DEACT") != -1 || line.indexOf("CLOSED") != -1) {
+                // "CLOSED" must be matched as a standalone URC line only:
+                // an indexOf match also fired on the word appearing inside
+                // SMS text / operator names / echoed payloads, dropping a
+                // healthy GPRS state and forcing pointless reconnects.
+                } else if (line.indexOf("+PDP: DEACT") != -1 || line.startsWith("CLOSED")) {
                     setStatus(ESIMSTATUS::DISCONNECTED);
                 }
 

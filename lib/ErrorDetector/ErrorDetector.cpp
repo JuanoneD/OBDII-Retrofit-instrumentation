@@ -245,7 +245,11 @@ void ErrorDetector::update() {
                    ERROR_DEFS[2].title, ERROR_DEFS[2].description);
 
     // --- 4: Aquecimento lento (one-shot per trip) ---------------------------
+    // Require a genuinely COLD start: m_tempAtRunStart is the temperature at
+    // the start of the current run, so an engine restarted warm (65-69 C)
+    // shows a near-zero rise and used to fire a false "termostato suspeito".
     bool slowWarmup = engineRunning &&
+                      m_tempAtRunStart < (TEMP_COLD_C - 20) &&
                       (now - m_continuousRunStartMs) >= SLOW_WARMUP_TIME &&
                       temp < TEMP_COLD_C &&
                       (temp - m_tempAtRunStart) < SLOW_WARMUP_RISE_C;

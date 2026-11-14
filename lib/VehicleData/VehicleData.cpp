@@ -58,7 +58,12 @@ VehicleData::~VehicleData() {
 void VehicleData::loadPersistentData() {
     VdLock lock(m_mutex);
 
-    preferences.begin("OBD2_READER", false);
+    // begin() returns false when NVS is unavailable (corrupt/full partition);
+    // without this check every setter's put* silently no-ops for the whole
+    // session and the values just fall back to defaults with no clue why.
+    if (!preferences.begin("OBD2_READER", false)) {
+        DebugSerial::println("[VehicleData] ERROR: NVS init failed (corrupt or full?). Using defaults; persistence disabled this session.");
+    }
 
     // get*(key, default) already returns the default when the key does not
     // exist yet, so the old "if (!isKey) put(...)" bookkeeping was

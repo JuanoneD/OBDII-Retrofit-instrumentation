@@ -68,6 +68,12 @@ void checkAndTriggerDTCCollection()
     // refuse, in which case the polling timer must stay running.
     if (OBDManager::startedCollectDTCsMode()) {
       CallbackManager::pauseTimer(ecuMessagesSenderID);
+      // Freeze the fuel/detector timers too: with PID polling paused, RPM,
+      // speed and temperature stop updating, and letting FuelCalculator keep
+      // integrating (and persisting to NVS) or ErrorDetector re-firing on
+      // frozen values would corrupt both during a long DTC read.
+      CallbackManager::pauseTimer(fuelCalculatorID);
+      CallbackManager::pauseTimer(errorDetectorID);
       display.updateAll();
     }
   }
@@ -103,6 +109,13 @@ void setEcuStatustoOffline()
 
   VehicleData::getInstance().setEcuStatus(ECUSTATUS::OFFLINE);
   DebugSerial::println("ECU Offline!");
+
+  // If the ECU dies mid-diagnosis there will never be a "43..." reply, so
+  // end DTC collection here as well; otherwise the polling timer stays
+  // paused forever (see OBDDecoder::decode for the same hazard).
+  if (OBDManager::isDtcCollectionMode()) {
+    OBDManager::endDTCCollection(0);
+  }
 }
 
 
@@ -190,7 +203,14 @@ void setup() {
     CallbackManager::addFlagWatcher(&OBDManager::obdConnectionAttemptFlag,setObdStatustoTryingToConnect);
     CallbackManager::addFlagWatcher(&OBDManager::dtcCollectionEndedFlag, []() {
         DebugSerial::println("DTC collection ended flag triggered.");
-        CallbackManager::resumeTimer(ecuMessagesSenderID);
+        // endDTCCollection() also fires from the disconnect path, so only
+        // resume the paused timers when the link is actually alive; the
+        // reconnect path resumes them anyway (setObdStatustoConnected).
+        if (VehicleData::getInstance().getObdiiStatus() == OBDIISTATUS::CONNECTED) {
+            CallbackManager::resumeTimer(ecuMessagesSenderID);
+            CallbackManager::resumeTimer(fuelCalculatorID);
+            CallbackManager::resumeTimer(errorDetectorID);
+        }
         display.updateAll();
         if (VehicleData::getInstance().getDTCCount() > 0) {
             DebugSerial::println("[DTC] Errors found, triggering cellular transmission...");

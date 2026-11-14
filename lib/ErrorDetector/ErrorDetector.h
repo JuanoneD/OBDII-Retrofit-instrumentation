@@ -86,7 +86,7 @@ private:
     static int m_tempAtRunStart;
 
     // Idle RPM window for instability detection (speed == 0)
-    static constexpr int IDLE_WINDOW_SAMPLES = 12; // 12 x 500ms = 6 s
+    static constexpr int IDLE_WINDOW_SAMPLES = 12; // 12 x 1000ms = 12 s
     static int m_idleRpmWindow[IDLE_WINDOW_SAMPLES];
     static int m_idleWindowIndex;
     static bool m_idleWindowFull;
